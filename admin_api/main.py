@@ -20,7 +20,7 @@ from admin_api.settings import get_admin_settings
 from database.models import Order, Product, PromoCode, SupportMessage, SupportTicket, User
 from database.session import SessionLocal
 
-app = FastAPI(title="DEXLO Admin API", docs_url=None, redoc_url=None)
+app = FastAPI(title="LVLUP Admin API", docs_url=None, redoc_url=None)
 bearer = HTTPBearer(auto_error=False)
 password_hasher = PasswordHasher()
 

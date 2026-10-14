@@ -175,3 +175,18 @@ class SupportMessage(Base):
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ticket: Mapped[SupportTicket] = relationship(back_populates="messages")
+
+
+class GameAccount(Base):
+    """Recipient data a user entered for a game (player ID, server…) plus the last pack, for one-tap repeats."""
+    __tablename__ = "game_accounts"
+    __table_args__ = (UniqueConstraint("user_id", "category_id", name="uq_game_account"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Top-level brand category (the game), so one ID serves every region/variant of it.
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"))
+    fields: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    last_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    category: Mapped[Category] = relationship()
+    last_product: Mapped[Product | None] = relationship()

@@ -75,14 +75,14 @@ def test_panel_transitions():
         assert bot.calls[-1][0] == "send_photo" and isinstance(bot.calls[-1][1], FSInputFile)
         panel_id = panel._panels[CHAT][0]
 
-        await panel.show(bot, CHAT, "steam list", banner="steam")
+        await panel.show(bot, CHAT, "steam list", banner="topup")
         assert bot.calls[-1][0] == "edit_media"
 
-        await panel.show(bot, CHAT, "steam page 2", banner="steam")
+        await panel.show(bot, CHAT, "steam page 2", banner="topup")
         assert bot.calls[-1] == ("edit_caption", panel_id)
 
         bot.not_modified = True
-        await panel.show(bot, CHAT, "steam page 2", banner="steam")
+        await panel.show(bot, CHAT, "steam page 2", banner="topup")
         assert bot.calls[-1] == ("edit_caption", panel_id)
         bot.not_modified = False
 

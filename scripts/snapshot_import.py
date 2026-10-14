@@ -1,6 +1,6 @@
-"""One-off catalogue snapshot: Telegram Stars/Premium, game top-ups and gift cards.
+"""One-off catalogue snapshot: game top-ups, Roblox, gaming gift cards and non-Steam keys.
 
-Look at the real response shapes first (about 7 requests):
+Look at the real response shapes first (about 9 requests):
     docker compose run --rm bot python -m scripts.snapshot_import --probe
 Then import with your rate and markup:
     docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --markup 15

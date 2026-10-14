@@ -10,7 +10,7 @@ def _date(settings: Settings) -> str:
 def _operator(settings: Settings) -> str:
     if settings.legal_operator_name.strip():
         return escape(settings.legal_operator_name)
-    return "Администрация сервиса DEXLO"
+    return f"Администрация сервиса {escape(settings.store_name)}"
 
 
 def _contact(settings: Settings) -> str:

@@ -9,13 +9,15 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import panel
 from bot.keyboards.inline import kb, main_menu, nav
 from bot.states import CartInput, Checkout, Search
 from config import get_settings
-from database.models import Category, Order, Product, PromoCode, User
+from database.models import Category, GameAccount, Order, Product, PromoCode, User
 from database.session import SessionLocal
 from services import cart_service, catalog_service, order_service
 from services.legal import payment_and_refunds, prices_and_tariffs, privacy_policy, service_rules, terms_of_service
@@ -23,11 +25,8 @@ from services.legal import payment_and_refunds, prices_and_tariffs, privacy_poli
 router = Router()
 settings = get_settings()
 PAGE_SIZE = 6
-BANNER_BY_TYPE = {"steam_gift": "steam", "gift_card": "cards", "telegram": "telegram", "game_topup": "topup"}
-PRODUCT_KINDS = {
-    "steam_gift": "🎮 Steam Gift", "gift_card": "🎁 Подарочная карта", "game_key": "🔑 Цифровой ключ",
-    "game_topup": "⚡ Пополнение игры", "telegram": "⭐ Telegram",
-}
+BANNER_BY_TYPE = {"game_topup": "topup", "roblox": "roblox", "gift_card": "cards", "game_key": "keys"}
+PRODUCT_KINDS = {"gift_card": "💳 Игровая карта (код)", "game_key": "🔑 Ключ активации", "game_topup": "⚡ Донат на аккаунт"}
 
 
 async def user_for(session: AsyncSession, message: Message | CallbackQuery) -> User:
@@ -122,12 +121,12 @@ async def main_text() -> str:
     async with SessionLocal() as session:
         count = await session.scalar(select(func.count()).select_from(Product).where(Product.active)) or 0
     return (
-        f"<b>{escape(settings.store_name)}</b> — цифровой магазин игр\n\n"
-        "⭐ Telegram Stars и Premium\n"
-        "⚡ Пополнение популярных игр\n"
-        "🎁 Подарочные карты: PlayStation, Xbox, Apple и другие\n"
-        "🎮 Игры и подарки Steam\n"
-        "⚡ Регион и способ активации указаны до покупки\n\n"
+        f"<b>{escape(settings.store_name)}</b> — донат в любимые игры\n\n"
+        "⚡ Валюта в PUBG, Free Fire, Genshin, MLBB и ещё десятках игр\n"
+        "🟥 Robux и карты Roblox\n"
+        "💳 Карты PlayStation, Xbox, Nintendo, Razer Gold\n"
+        "🔑 Ключи игр для консолей и ПК\n\n"
+        "🎮 Бот запоминает ваш игровой ID — следующий донат в один тап.\n\n"
         f"<i>В каталоге {offers_count(count)}.</i> Выберите раздел 👇"
     )
 
@@ -146,10 +145,10 @@ async def menu(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 SECTION_TITLES = {
-    "telegram": ("⭐ <b>Telegram</b>", "Звёзды и Premium на любой аккаунт по username."),
-    "game_topup": ("⚡ <b>Пополнение игр</b>", "Валюта зачисляется на игровой аккаунт по ID. Выберите игру:"),
-    "gift_card": ("🎁 <b>Подарочные карты</b>", "Коды для магазинов и сервисов. Выберите бренд:"),
-    "steam_gift": ("🎮 <b>Игры Steam</b>", "Выберите категорию:"),
+    "game_topup": ("⚡ <b>Донат в игры</b>", "Валюта и пропуски зачисляются прямо на игровой аккаунт по ID. Выберите игру:"),
+    "roblox": ("🟥 <b>Roblox</b>", "Robux на аккаунт или подарочная карта Roblox:"),
+    "gift_card": ("💳 <b>Игровые карты</b>", "Карты пополнения кошельков и магазинов: PlayStation, Xbox, Nintendo, Razer Gold и другие. Выберите бренд:"),
+    "game_key": ("🔑 <b>Ключи игр</b>", "Ключи для Xbox, PlayStation, Epic Games, Battle.net и других магазинов. Выберите платформу:"),
 }
 GRID_PAGE = 10
 
@@ -192,7 +191,8 @@ async def categories_by_type(callback: CallbackQuery) -> None:
     title, hint = SECTION_TITLES.get(kind, ("<b>Каталог</b>", "Выберите категорию:"))
     markup, page, pages = category_grid(rows, page, f"cat_type:{kind}", "menu")
     counter = f"{len(rows)} · страница {page} из {pages}" if pages > 1 else f"{len(rows)}"
-    await render(callback, f"{title}\n{hint}\n\n<i>Брендов и игр: {counter}</i>", markup, banner_for(kind))
+    label = "Платформ" if kind == "game_key" else "Игр и брендов"
+    await render(callback, f"{title}\n{hint}\n\n<i>{label}: {counter}</i>", markup, banner_for(kind))
 
 
 async def category_back(category: Category | None) -> str:
@@ -211,15 +211,16 @@ async def show_category(callback: CallbackQuery, category_id: int, page: int) ->
     if not child:
         await render_list(callback, category_id, 1)
         return
-    # A section with a single top-level category (Telegram) goes straight back to the menu.
+    # A section with a single top-level category goes straight back to the menu.
     back = "menu" if parent and not parent.parent_id and len(siblings) <= 1 else await category_back(parent)
     markup, page, pages = category_grid(child, page, f"catp:{category_id}", back)
     kind = parent.type if parent else None
-    if kind == "telegram":
-        header = "\n".join(SECTION_TITLES["telegram"])
-    else:
-        hint = {"gift_card": "Выберите регион карты — он должен совпадать с регионом аккаунта:", "game_topup": "Выберите регион и способ пополнения:"}.get(kind, "Выберите вариант:")
-        header = f"<b>{escape(parent.name) if parent else 'Каталог'}</b>\n{hint}"
+    hint = {
+        "gift_card": "Выберите регион карты — он должен совпадать с регионом аккаунта:",
+        "game_topup": "Выберите регион и способ пополнения.\n<i>Авто — моментально, вручную — оператор, дольше.</i>",
+        "roblox": "Выберите регион и способ:",
+    }.get(kind, "Выберите вариант:")
+    header = f"<b>{escape(parent.name) if parent else 'Каталог'}</b>\n{hint}"
     await render(callback, header, markup, banner_for(kind))
 
 
@@ -253,7 +254,7 @@ async def render_list(callback: CallbackQuery, category_id: int, page: int) -> N
     if page < pages: controls.append(("➡️", f"list:{category_id}:{page + 1}"))
     buttons += [controls, nav(back)]
     title = escape(category.name) if category else "Каталог"
-    if parent and parent.type != "telegram":
+    if parent:
         title = f"{escape(parent.name)} · {title}"
     await render(callback, f"<b>{title}</b>\n{offers_count(total)} · страница {page} из {pages}\n<i>Сначала самые доступные</i>", kb(*buttons), banner)
 
@@ -345,21 +346,114 @@ async def add_to_cart(user_tg: Message | CallbackQuery, product_id: int, configu
     return "Добавлено в корзину"
 
 
+async def root_category_id(session: AsyncSession, category_id: int | None) -> int | None:
+    """The game (top-level brand) a product belongs to, whatever region/variant it is listed under."""
+    seen: set[int] = set()
+    while category_id and category_id not in seen:
+        seen.add(category_id)
+        category = await session.get(Category, category_id)
+        if not category or not category.parent_id:
+            return category_id
+        category_id = category.parent_id
+    return category_id
+
+
+async def saved_account(session: AsyncSession, user_id: int, item: Product) -> GameAccount | None:
+    """A saved account is reused only when it has exactly the fields this product asks for."""
+    root = await root_category_id(session, item.category_id)
+    account = await session.scalar(select(GameAccount).where(GameAccount.user_id == user_id, GameAccount.category_id == root)) if root else None
+    keys = sorted(f["key"] for f in input_fields(item))
+    if account and sorted(f["key"] for f in account.fields) == keys:
+        return account
+    return None
+
+
+async def remember_account(user_tg: Message | CallbackQuery, item: Product, values: list[dict]) -> None:
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, user_tg)
+        root = await root_category_id(session, item.category_id)
+        if not root:
+            return
+        statement = insert(GameAccount).values(user_id=user.id, category_id=root, fields=values, last_product_id=item.id)
+        await session.execute(statement.on_conflict_do_update(
+            constraint="uq_game_account", set_={"fields": values, "last_product_id": item.id, "updated_at": func.now()},
+        ))
+
+
+def fields_summary(values: list[dict]) -> str:
+    return "\n".join(f"{escape(v['label'])}: <b>{escape(v['value'])}</b>" for v in values)
+
+
+def added_screen(item: Product, values: list[dict]) -> tuple[str, object]:
+    text = f"✅ <b>Добавлено в корзину</b>\n{escape(item.name)} · {catalog_service.money(item.price_minor, item.currency)}"
+    if values:
+        text += f"\n\n{fields_summary(values)}\n<i>Аккаунт сохранён в «🎮 Мои игры» — в следующий раз донат в один тап.</i>"
+    markup = kb([("🧺 Перейти в корзину", "cart")], [("🛍 Ещё пакет", f"list:{item.category_id}:1"), ("🏠 Меню", "menu")])
+    return text, markup
+
+
 @router.callback_query(F.data.startswith("add:"))
 async def add(callback: CallbackQuery, state: FSMContext) -> None:
     product_id = int(callback.data.split(":")[1])
-    async with SessionLocal() as session:
+    async with SessionLocal() as session, session.begin():
         item = await session.get(Product, product_id)
-    fields = input_fields(item) if item else []
+        fields = input_fields(item) if item else []
+        user = await user_for(session, callback)
+        account = await saved_account(session, user.id, item) if fields else None
+    if account:
+        await render(
+            callback,
+            f"<b>{escape(item.name)}</b>\n\nПополнить сохранённый аккаунт?\n{fields_summary(account.fields)}",
+            kb([("✅ Да, на этот аккаунт", f"addsaved:{product_id}")], [("✏️ Другой аккаунт", f"addnew:{product_id}"), ("✖️ Отмена", f"addcancel:{product_id}")]),
+            banner_for(item.product_type),
+        )
+        return
     if fields:
-        await state.set_state(CartInput.waiting_value)
-        await state.update_data(add_product=product_id, add_values=[])
-        await render(callback, field_prompt(item, fields, 0), kb([("✖️ Отмена", f"addcancel:{product_id}")]), banner_for(item.product_type))
+        await ask_fields(callback, state, item, fields)
         return
     try:
         await callback.answer(await add_to_cart(callback, product_id, None))
     except ValueError as exc:
         await callback.answer(str(exc), show_alert=True)
+
+
+async def ask_fields(callback: CallbackQuery, state: FSMContext, item: Product, fields: list[dict[str, str]]) -> None:
+    await state.set_state(CartInput.waiting_value)
+    await state.update_data(add_product=item.id, add_values=[])
+    await render(callback, field_prompt(item, fields, 0), kb([("✖️ Отмена", f"addcancel:{item.id}")]), banner_for(item.product_type))
+
+
+@router.callback_query(F.data.startswith("addnew:"))
+async def add_new_account(callback: CallbackQuery, state: FSMContext) -> None:
+    async with SessionLocal() as session:
+        item = await session.get(Product, int(callback.data.split(":")[1]))
+    if not item:
+        await render(callback, "<b>Товар больше недоступен</b>", kb(nav()), "catalog")
+        return
+    await ask_fields(callback, state, item, input_fields(item))
+
+
+async def add_with_account(callback: CallbackQuery, item: Product, values: list[dict]) -> None:
+    try:
+        await add_to_cart(callback, item.id, {"fields": values})
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
+    await remember_account(callback, item, values)
+    text, markup = added_screen(item, values)
+    await render(callback, text, markup, "cart")
+
+
+@router.callback_query(F.data.startswith("addsaved:"))
+async def add_saved(callback: CallbackQuery) -> None:
+    async with SessionLocal() as session, session.begin():
+        item = await session.get(Product, int(callback.data.split(":")[1]))
+        user = await user_for(session, callback)
+        account = await saved_account(session, user.id, item) if item else None
+    if not item or not account:
+        await render(callback, "<b>Аккаунт не найден</b>\nВведите данные заново.", kb(nav()), "catalog")
+        return
+    await add_with_account(callback, item, account.fields)
 
 
 @router.callback_query(F.data.startswith("addcancel:"))
@@ -400,13 +494,76 @@ async def add_value(message: Message, state: FSMContext) -> None:
     except ValueError as exc:
         await reply(message, f"<b>Не получилось добавить</b>\n{escape(str(exc))}", kb(nav()), banner_for(item.product_type))
         return
-    summary = "\n".join(f"{escape(v['label'])}: <b>{escape(v['value'])}</b>" for v in values)
-    await reply(
-        message,
-        f"✅ <b>Добавлено в корзину</b>\n{escape(item.name)}\n\n{summary}",
-        kb([("🧺 Перейти в корзину", "cart")], [("🛍 Продолжить покупки", f"list:{item.category_id}:1"), ("🏠 Меню", "menu")]),
-        "cart",
-    )
+    await remember_account(message, item, values)
+    text, markup = added_screen(item, values)
+    await reply(message, text, markup, "cart")
+
+
+@router.callback_query(F.data == "accounts")
+async def accounts(callback: CallbackQuery) -> None:
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, callback)
+        rows = list((await session.scalars(
+            select(GameAccount).options(selectinload(GameAccount.category)).where(GameAccount.user_id == user.id).order_by(GameAccount.updated_at.desc())
+        )).all())
+    if not rows:
+        await render(
+            callback,
+            "🎮 <b>Мои игры</b>\n\nЗдесь появятся аккаунты, на которые вы донатили. Бот запомнит ID, и следующий донат займёт один тап.",
+            kb([("⚡ Донат в игры", "cat_type:game_topup")], nav()), "accounts",
+        )
+        return
+    buttons = []
+    for account in rows[:20]:
+        first = account.fields[0]["value"] if account.fields else ""
+        buttons.append([(f"{account.category.name[:28]} · {first[:20]}", f"acc:{account.id}")])
+    buttons.append(nav())
+    await render(callback, f"🎮 <b>Мои игры</b>\nСохранённых аккаунтов: {len(rows)}\nВыберите, чтобы повторить донат:", kb(*buttons), "accounts")
+
+
+async def own_account(callback: CallbackQuery, account_id: int) -> GameAccount | None:
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, callback)
+        return await session.scalar(
+            select(GameAccount).options(selectinload(GameAccount.category), selectinload(GameAccount.last_product))
+            .where(GameAccount.id == account_id, GameAccount.user_id == user.id)
+        )
+
+
+@router.callback_query(F.data.startswith("acc:"))
+async def account_view(callback: CallbackQuery) -> None:
+    account = await own_account(callback, int(callback.data.split(":")[1]))
+    if not account:
+        await render(callback, "<b>Аккаунт не найден</b>", kb(nav("accounts")), "accounts")
+        return
+    last = account.last_product if account.last_product and account.last_product.active else None
+    text = f"🎮 <b>{escape(account.category.name)}</b>\n\n{fields_summary(account.fields)}"
+    buttons = []
+    if last:
+        text += f"\n\nПоследний донат: {escape(last.name)} · {catalog_service.money(last.price_minor, last.currency)}"
+        buttons.append([(f"🔁 Повторить · {catalog_service.money(last.price_minor, last.currency)}", f"accrep:{account.id}")])
+    buttons += [[("⚡ Выбрать другой пакет", f"cat:{account.category_id}")], [("🗑 Забыть аккаунт", f"accdel:{account.id}")], nav("accounts")]
+    await render(callback, text, kb(*buttons), "accounts")
+
+
+@router.callback_query(F.data.startswith("accrep:"))
+async def account_repeat(callback: CallbackQuery) -> None:
+    account = await own_account(callback, int(callback.data.split(":")[1]))
+    if not account or not account.last_product or not account.last_product.active:
+        await callback.answer("Этот пакет больше недоступен — выберите другой", show_alert=True)
+        return
+    await add_with_account(callback, account.last_product, account.fields)
+
+
+@router.callback_query(F.data.startswith("accdel:"))
+async def account_delete(callback: CallbackQuery) -> None:
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, callback)
+        account = await session.scalar(select(GameAccount).where(GameAccount.id == int(callback.data.split(":")[1]), GameAccount.user_id == user.id))
+        if account:
+            await session.delete(account)
+    await callback.answer("Аккаунт удалён")
+    await accounts(callback)
 
 
 async def render_cart(callback: CallbackQuery, user_id: int) -> None:

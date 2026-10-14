@@ -2,8 +2,8 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-gamestore}
-      POSTGRES_USER: ${POSTGRES_USER:-gamestore}
+      POSTGRES_DB: ${POSTGRES_DB:-lvlup}
+      POSTGRES_USER: ${POSTGRES_USER:-lvlup}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -27,8 +27,8 @@ services:
     env_file: .env
     environment:
       PGHOST: db
-      PGDATABASE: ${POSTGRES_DB:-gamestore}
-      PGUSER: ${POSTGRES_USER:-gamestore}
+      PGDATABASE: ${POSTGRES_DB:-lvlup}
+      PGUSER: ${POSTGRES_USER:-lvlup}
       PGPASSWORD: ${POSTGRES_PASSWORD:-change_me}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
@@ -38,14 +38,14 @@ services:
     volumes:
       - postgres_backups:/backups
     command: >-
-      sh -c 'while true; do pg_dump --format=custom --file=/backups/gamestore-$$(date +%Y%m%d-%H%M%S).dump; find /backups -type f -mtime +$${BACKUP_KEEP_DAYS} -delete; sleep $${BACKUP_INTERVAL_SECONDS}; done'
+      sh -c 'while true; do pg_dump --format=custom --file=/backups/lvlup-$$(date +%Y%m%d-%H%M%S).dump; find /backups -type f -mtime +$${BACKUP_KEEP_DAYS} -delete; sleep $${BACKUP_INTERVAL_SECONDS}; done'
     restart: unless-stopped
 
   admin-api:
     build: .
     env_file: .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://gamestore:change_me@db:5432/gamestore}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://lvlup:change_me@db:5432/lvlup}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-}
@@ -63,7 +63,7 @@ services:
       admin-api:
         condition: service_started
     ports:
-      - "${ADMIN_WEB_BIND:-127.0.0.1}:${ADMIN_WEB_PORT:-8080}:80"
+      - "${ADMIN_WEB_BIND:-127.0.0.1}:${ADMIN_WEB_PORT:-8081}:80"
     restart: unless-stopped
 
   caddy:

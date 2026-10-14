@@ -8,11 +8,12 @@ def kb(*rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:
 def main_menu() -> InlineKeyboardMarkup:
     """Only show storefront sections that this curated catalogue actually imports."""
     rows = [
-        [("⭐ Telegram", "cat_type:telegram"), ("⚡ Пополнение игр", "cat_type:game_topup")],
-        [("🎮 Steam", "cat_type:steam_gift"), ("🎁 Подарочные карты", "cat_type:gift_card")],
-        [("🔎 Поиск", "search"), ("🛒 Корзина", "cart")],
-        [("👤 Кабинет", "profile"), ("📦 Заказы", "orders:1")],
-        [("💬 Поддержка", "support"), ("📄 Документы", "documents")],
+        [("⚡ Донат в игры", "cat_type:game_topup"), ("🟥 Roblox", "cat_type:roblox")],
+        [("💳 Игровые карты", "cat_type:gift_card"), ("🔑 Ключи игр", "cat_type:game_key")],
+        [("🎮 Мои игры", "accounts"), ("🔎 Поиск", "search")],
+        [("🛒 Корзина", "cart"), ("📦 Заказы", "orders:1")],
+        [("👤 Кабинет", "profile"), ("💬 Поддержка", "support")],
+        [("📄 Документы", "documents")],
     ]
     return kb(*rows)
 

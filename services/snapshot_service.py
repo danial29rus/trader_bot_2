@@ -1,4 +1,4 @@
-"""One-off catalogue snapshot from ReSellCodes: Telegram, game top-ups and gift cards.
+"""One-off catalogue snapshot from ReSellCodes: game top-ups, Roblox, gaming gift cards and non-Steam keys.
 
 The snapshot is meant to be run by hand, rarely. It stays under the supplier's
 rate limit (paced requests plus a hard request budget), commits after every
@@ -16,7 +16,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from decimal import ROUND_UP, Decimal
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -28,20 +28,38 @@ from services.import_service import get_category, upsert_product
 
 logger = logging.getLogger(__name__)
 
-# Popular brands, in the order they should appear in the bot.
+# Popular games and brands, in the order they appear in the bot. Queries with no match cost one request.
 TOPUP_BRANDS = (
-    "PUBG Mobile", "Genshin Impact", "Mobile Legends", "Free Fire", "Honkai: Star Rail",
-    "Zenless Zone Zero", "Call of Duty Mobile", "Brawl Stars", "Clash of Clans", "Clash Royale",
-    "Roblox", "Valorant", "Wuthering Waves", "Honor of Kings", "Arena Breakout", "Delta Force",
-    "Blood Strike", "Standoff 2", "8 Ball Pool", "Stumble Guys", "EA Sports FC Mobile", "Marvel Rivals",
+    "PUBG Mobile", "Free Fire", "Mobile Legends", "Genshin Impact", "Honkai: Star Rail", "Zenless Zone Zero",
+    "Wuthering Waves", "Call of Duty", "Brawl Stars", "Clash of Clans", "Clash Royale", "Hay Day", "Squad Busters",
+    "Standoff 2", "Valorant", "League of Legends", "Wild Rift", "Honor of Kings", "Arena Breakout", "Delta Force",
+    "Blood Strike", "Farlight 84", "Sausage Man", "Identity V", "Eggy Party", "Stumble Guys", "8 Ball Pool",
+    "EA Sports FC", "eFootball", "Marvel Rivals", "Marvel Snap", "Fortnite", "Apex Legends", "Minecraft",
+    "Pokemon", "Tower of Fantasy", "Punishing Gray Raven", "Arknights", "Lords Mobile", "Rise of Kingdoms",
+    "Whiteout Survival", "Last War", "State of Survival", "Call of Dragons", "Black Desert", "Ragnarok",
+    "Dragon Ball", "One Punch Man", "Undawn", "Super Sus", "Love and Deepspace", "Path of Exile", "Warframe",
+    "World of Tanks", "War Thunder", "Lineage", "Ace Racer", "Free Fire MAX",
 )
+ROBLOX_BRANDS = ("Roblox",)
 GIFT_CARD_BRANDS = (
-    "PlayStation", "Xbox", "Nintendo", "Steam", "Apple", "Google Play", "Roblox", "Spotify",
-    "Netflix", "Razer Gold", "Riot", "Blizzard", "EA", "Ubisoft", "Amazon", "Discord", "Fortnite", "Minecraft",
+    "PlayStation", "Xbox", "Nintendo", "Razer Gold", "Garena", "Riot", "Blizzard", "EA", "Ubisoft",
+    "Google Play", "Apple", "Steam", "Twitch", "Discord",
 )
-STAR_PACKS = (50, 100, 250, 500, 1000, 2500, 5000, 10000)
-TELEGRAM_USERNAME_FIELD = {"key": "telegram_username", "label": "Username получателя в Telegram (например, @durov)", "type": "text"}
-SECTIONS = ("telegram", "topups", "giftcards")
+# Keys are searched by popular title; Steam keys are left to the first bot.
+KEY_GAMES = (
+    "Minecraft", "Grand Theft Auto V", "Red Dead Redemption 2", "Forza Horizon 5", "EA Sports FC", "Call of Duty",
+    "Diablo IV", "Overwatch", "Elden Ring", "Hogwarts Legacy", "Cyberpunk 2077", "The Sims 4", "Battlefield",
+    "Assassin's Creed", "Far Cry", "Mortal Kombat", "Tekken 8", "Spider-Man", "God of War", "Starfield",
+    "Fortnite", "Rainbow Six", "Need for Speed", "It Takes Two", "Hollow Knight",
+)
+KEYS_PER_TITLE = 4
+SECTIONS = ("topups", "roblox", "giftcards", "keys")
+PLATFORMS = (
+    ("xbox", "🟩 Xbox"), ("playstation", "🟦 PlayStation"), ("psn", "🟦 PlayStation"), ("nintendo", "🟥 Nintendo"),
+    ("epic", "⬛ Epic Games"), ("battle", "🔷 Battle.net"), ("ea app", "🟧 EA app"), ("origin", "🟧 EA app"),
+    ("ubisoft", "🟪 Ubisoft Connect"), ("uplay", "🟪 Ubisoft Connect"), ("rockstar", "🟨 Rockstar"),
+    ("gog", "🟫 GOG"), ("microsoft", "🪟 Microsoft Store"), ("windows", "🪟 Microsoft Store"),
+)
 SUPPLIER_ORIGIN = "https://resell.codes"
 # Regions most buyers need come first; the rest follow alphabetically.
 POPULAR_REGIONS = ("GLOBAL", "RU", "CIS", "KZ", "TR", "US", "GB", "UK", "EU", "DE", "PL", "UA", "AE", "IN", "BR")
@@ -115,35 +133,6 @@ def _items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def parse_star_packs(payload: dict[str, Any]) -> list[tuple[int, str]]:
-    """(stars, price_usd) pairs. The docs only promise "live pricing", so accept a pack list or a per-star price."""
-    packs = []
-    for item in _items(payload):
-        quantity, price = _first(item, "quantity", "stars", "amount", "count"), _first(item, "price_usd", "usd", "price")
-        if quantity and price is not None:
-            packs.append((int(quantity), str(price)))
-    if packs:
-        return sorted(packs)
-    unit = _first(payload, "price_per_star", "price_per_star_usd", "star_price_usd", "usd_per_star", "price_usd", "rate")
-    if unit is None:
-        return []
-    low, high = int(_first(payload, "min_quantity", "min") or 50), int(_first(payload, "max_quantity", "max") or 10000)
-    return [(q, str((Decimal(str(unit)) * q).quantize(Decimal("0.0001"), rounding=ROUND_UP))) for q in STAR_PACKS if low <= q <= high]
-
-
-def parse_premium_plans(payload: dict[str, Any]) -> list[tuple[int, str]]:
-    plans = []
-    for item in _items(payload):
-        months, price = _first(item, "months", "duration", "period"), _first(item, "price_usd", "usd", "price")
-        if months and price is not None:
-            plans.append((int(re.sub(r"\D", "", str(months)) or 0), str(price)))
-    if not plans:
-        # Shape like {"3": "11.99", "6": ...} or {"prices": {"3": ...}}.
-        source = payload.get("prices") if isinstance(payload.get("prices"), dict) else payload
-        plans = [(int(k), str(v)) for k, v in source.items() if str(k).isdigit() and v is not None]
-    return sorted(p for p in plans if p[0] > 0)
-
-
 def image_url(path: str | None) -> str | None:
     """Supplier images come as site-relative paths; Telegram needs an absolute URL."""
     if not path:
@@ -186,38 +175,10 @@ async def _already_imported(session: AsyncSession, product_type: str, prefix: st
     return found is not None
 
 
-async def snapshot_telegram(api: PacedClient, session: AsyncSession, pricing: Pricing, result: SnapshotResult) -> None:
-    root = await get_category(session, "Telegram", "telegram", "root", sort_order=0)
-    raw_fields = [TELEGRAM_USERNAME_FIELD]
-
-    stars = parse_star_packs(await api.get("/telegram/stars"))
-    if stars:
-        category = await get_category(session, "⭐ Telegram Stars", "telegram", "stars", root.id, sort_order=0)
-        for quantity, usd in stars:
-            ok = await upsert_product(session, category, "telegram", f"stars:{quantity}", f"⭐ {quantity} Stars", {"kind": "stars", "quantity": quantity, "fields": raw_fields},
-                                      price_usd=usd, price=(pricing.rub_minor(usd), "RUB"), platform="Telegram", activation="На аккаунт по username",
-                                      description="Звёзды зачисляются на аккаунт получателя по username. Пароль и код входа не нужны.")
-            result.counters["imported" if ok else "skipped"] += 1
-    else:
-        result.warnings.append("telegram stars: unknown response shape, nothing imported (run --probe)")
-
-    premium = parse_premium_plans(await api.get("/telegram/premium"))
-    if premium:
-        category = await get_category(session, "💎 Telegram Premium", "telegram", "premium", root.id, sort_order=1)
-        for months, usd in premium:
-            ok = await upsert_product(session, category, "telegram", f"premium:{months}", f"💎 Premium · {months} мес.", {"kind": "premium", "months": months, "fields": raw_fields},
-                                      price_usd=usd, price=(pricing.rub_minor(usd), "RUB"), platform="Telegram", activation="Подарок на аккаунт по username",
-                                      description="Подписка Telegram Premium оформляется подарком на аккаунт получателя по username.")
-            result.counters["imported" if ok else "skipped"] += 1
-    else:
-        result.warnings.append("telegram premium: unknown response shape, nothing imported (run --probe)")
-    await session.commit()
-
-
 async def _brand_snapshot(
     api: PacedClient, session: AsyncSession, pricing: Pricing, result: SnapshotResult, refresh: bool, *,
     brands: tuple[str, ...], brands_path: str, offers_path: str, offers_key: str, offer_id_key: str,
-    kind: str, product_type: str, activation: str,
+    kind: str, product_type: str, activation: str, title_suffix: str = "", exclude: tuple[str, ...] = (), hide_legacy: bool = True,
 ) -> None:
     seen: set[str] = set()
     for order, query in enumerate(brands):
@@ -234,9 +195,11 @@ async def _brand_snapshot(
             subcategories = [s for s in brand.get("subcategories", []) if s.get("category_id")]
             if not name or name.casefold() in seen or not _matches(query, name) or not subcategories:
                 continue
+            if any(_matches(x, name) for x in exclude):
+                continue
             seen.add(name.casefold())
             image = image_url(next((s.get("image") for s in subcategories if s.get("image")), None))
-            parent = await get_category(session, name, kind, f"brand-{name}", image=image, sort_order=order)
+            parent = await get_category(session, f"{name}{title_suffix}", kind, f"brand-{name}{title_suffix}", image=image, sort_order=order)
             for sub in subcategories:
                 supplier_id = str(sub["category_id"])
                 if not refresh and await _already_imported(session, product_type, f"{supplier_id}:"):
@@ -273,7 +236,8 @@ async def _brand_snapshot(
                     )
                     result.counters["imported" if ok else "skipped"] += 1
                 await session.commit()
-    await _hide_legacy_categories(session, kind)
+    if hide_legacy:
+        await _hide_legacy_categories(session, kind)
 
 
 async def _hide_legacy_categories(session: AsyncSession, kind: str) -> None:
@@ -287,6 +251,65 @@ async def _hide_legacy_categories(session: AsyncSession, kind: str) -> None:
     await session.commit()
 
 
+def platform_label(platform: str | None) -> str | None:
+    """Readable store name, or None for Steam (sold by the first bot) and unknown blanks."""
+    raw = (platform or "").strip()
+    if not raw or "steam" in raw.casefold():
+        return None
+    return next((label for needle, label in PLATFORMS if needle in raw.casefold()), raw)
+
+
+async def snapshot_keys(api: PacedClient, session: AsyncSession, pricing: Pricing, result: SnapshotResult, refresh: bool) -> None:
+    platforms: dict[str, Category] = {}
+    for title in KEY_GAMES:
+        try:
+            games = _items(await api.get("/game-keys", {"q": title, "limit": 20}))
+        except BudgetExhausted:
+            raise
+        except Exception as exc:
+            result.counters["errors"] += 1
+            result.warnings.append(f"keys search {title!r}: {exc}")
+            continue
+        picked = [g for g in games if g.get("game_id") and platform_label(g.get("platform")) and _matches(title, str(g.get("name") or ""))][:KEYS_PER_TITLE]
+        for game in picked:
+            game_id = str(game["game_id"])
+            if not refresh and await _already_imported(session, "game_key", f"{game_id}:"):
+                result.counters["skipped_existing"] += 1
+                continue
+            try:
+                details = await api.get(f"/game-keys/{game_id}/keys")
+            except BudgetExhausted:
+                raise
+            except Exception as exc:
+                result.counters["errors"] += 1
+                result.warnings.append(f"keys {game_id}: {exc}")
+                continue
+            keys = [k for k in details.get("keys", []) if k.get("price_usd") is not None and k.get("stock") != 0]
+            if not keys:
+                result.counters["skipped"] += 1
+                continue
+            label = platform_label(game.get("platform"))
+            if label not in platforms:
+                order = next((i for i, (_, known) in enumerate(PLATFORMS) if known == label), 100)
+                platforms[label] = await get_category(session, label, "game_key", f"platform-{label}", sort_order=order)
+            name = str(game.get("name") or title)
+            restriction = game.get("region_restriction") or details.get("region_restriction")
+            description = f"Платформа: {game.get('platform')}. Регион ключа: {game.get('region') or '—'}."
+            if restriction:
+                description += f"\nОграничения региона: {restriction}"
+            for key in keys:
+                key_name = str(key.get("name") or "")
+                full = name if not key_name or key_name.casefold() in name.casefold() else product_name(name, key_name)
+                ok = await upsert_product(
+                    session, platforms[label], "game_key", f"{game_id}:{key['key_id']}", full, {"game": game, "key": key},
+                    price_usd=key["price_usd"], price=(pricing.rub_minor(key["price_usd"]), "RUB"), image=image_url(game.get("image")),
+                    platform=str(game.get("platform") or ""), region=game.get("region"), activation="Ключ активации",
+                    stock=key.get("stock"), description=description,
+                )
+                result.counters["imported" if ok else "skipped"] += 1
+            await session.commit()
+
+
 async def run_snapshot(
     session: AsyncSession, api_key: str, pricing: Pricing, *, sections: tuple[str, ...] = SECTIONS,
     budget: int = 1500, per_minute: int = 25, refresh: bool = False,
@@ -294,16 +317,19 @@ async def run_snapshot(
     result = SnapshotResult()
     async with PacedClient(api_key, budget, per_minute) as api:
         try:
-            if "telegram" in sections:
-                await snapshot_telegram(api, session, pricing, result)
+            topups = dict(brands_path="/top-ups/brands", offers_path="/top-ups/categories/{id}/offers", offers_key="offers",
+                          offer_id_key="offer_id", product_type="game_topup", activation="Пополнение на аккаунт")
+            cards = dict(brands_path="/gift-cards/brands", offers_path="/gift-cards/categories/{id}/cards", offers_key="offers",
+                         offer_id_key="card_id", product_type="gift_card", activation="code")
             if "topups" in sections:
-                await _brand_snapshot(api, session, pricing, result, refresh, brands=TOPUP_BRANDS, brands_path="/top-ups/brands",
-                                      offers_path="/top-ups/categories/{id}/offers", offers_key="offers", offer_id_key="offer_id",
-                                      kind="game_topup", product_type="game_topup", activation="Пополнение на аккаунт")
+                await _brand_snapshot(api, session, pricing, result, refresh, brands=TOPUP_BRANDS, kind="game_topup", exclude=ROBLOX_BRANDS, **topups)
+            if "roblox" in sections:
+                await _brand_snapshot(api, session, pricing, result, refresh, brands=ROBLOX_BRANDS, kind="roblox", title_suffix=" · Robux", hide_legacy=False, **topups)
+                await _brand_snapshot(api, session, pricing, result, refresh, brands=ROBLOX_BRANDS, kind="roblox", title_suffix=" · подарочные карты", hide_legacy=False, **cards)
             if "giftcards" in sections:
-                await _brand_snapshot(api, session, pricing, result, refresh, brands=GIFT_CARD_BRANDS, brands_path="/gift-cards/brands",
-                                      offers_path="/gift-cards/categories/{id}/cards", offers_key="offers", offer_id_key="card_id",
-                                      kind="gift_card", product_type="gift_card", activation="code")
+                await _brand_snapshot(api, session, pricing, result, refresh, brands=GIFT_CARD_BRANDS, kind="gift_card", exclude=ROBLOX_BRANDS, **cards)
+            if "keys" in sections:
+                await snapshot_keys(api, session, pricing, result, refresh)
         except BudgetExhausted as exc:
             await session.commit()
             result.stopped_by_budget = True
@@ -329,14 +355,17 @@ async def probe(api_key: str) -> dict[str, Any]:
         me = await take("me", "/me")
         if isinstance(me, dict):
             me.pop("email", None)
-        await take("telegram_stars", "/telegram/stars")
-        await take("telegram_premium", "/telegram/premium")
         topups = await take("topup_brands_pubg", "/top-ups/brands", {"q": "PUBG"})
-        cards = await take("giftcard_brands_playstation", "/gift-cards/brands", {"q": "PlayStation"})
+        await take("topup_brands_roblox", "/top-ups/brands", {"q": "Roblox"})
+        cards = await take("giftcard_brands_razer", "/gift-cards/brands", {"q": "Razer Gold"})
+        keys = await take("game_keys_minecraft", "/game-keys", {"q": "Minecraft", "limit": 20})
         for label, payload, path in (("topup_offers_sample", topups, "/top-ups/categories/{id}/offers"), ("giftcard_cards_sample", cards, "/gift-cards/categories/{id}/cards")):
             sub = next((s for b in _items(payload) for s in b.get("subcategories", []) if s.get("category_id")), None)
             if sub:
                 await take(label, path.format(id=sub["category_id"]))
+        game = next((g for g in _items(keys) if g.get("game_id") and platform_label(g.get("platform"))), None)
+        if game:
+            await take("game_key_offers_sample", f"/game-keys/{game['game_id']}/keys")
         samples["_requests_used"] = api.used
         samples["_daily_remaining"] = api.remaining_day
     return samples

@@ -1,4 +1,3 @@
-import asyncio
 from html import escape
 
 from aiogram import F, Router
@@ -15,12 +14,10 @@ from config import get_settings
 from database.models import AuditLog, Order, Product, SupportMessage, SupportTicket, User
 from database.session import SessionLocal
 from services import catalog_service, order_service
-from services.import_service import import_catalog
 from bot.handlers.support import transcript
 
 router = Router()
 settings = get_settings()
-_import_lock = asyncio.Lock()
 
 
 def is_admin(telegram_id: int | None) -> bool:
@@ -28,7 +25,7 @@ def is_admin(telegram_id: int | None) -> bool:
 
 
 def admin_menu():
-    return kb([("📦 Последние заказы", "adm_orders")], [("💬 Открытые обращения", "adm_support")], [("📊 Статистика", "adm_stats")], [("🔄 Импорт каталога", "adm_import")], nav())
+    return kb([("📦 Последние заказы", "adm_orders")], [("💬 Открытые обращения", "adm_support")], [("📊 Статистика", "adm_stats")], [("🗂 Как обновить каталог", "adm_import")], nav())
 
 
 @router.message(Command("admin"))
@@ -96,25 +93,13 @@ async def callbacks(callback: CallbackQuery) -> None:
         buttons.append([("⬅️ В админку", "adm_home")])
         await render(callback, "<b>Открытые обращения</b>", kb(*buttons))
     elif callback.data == "adm_import":
-        if _import_lock.locked():
-            await callback.answer("Импорт уже выполняется", show_alert=True)
-            return
-        if not settings.resellcodes_api_key:
-            await render(callback, "RESELLCODES_API_KEY не задан. Для проверки используйте демо-каталог: <code>python -m scripts.seed_demo</code>", admin_menu())
-            return
-        await callback.answer("Импорт запущен")
-        await render(callback, "Импорт каталога выполняется. Результат будет отправлен сюда.", admin_menu())
-        asyncio.create_task(run_import(callback))
-
-
-async def run_import(callback: CallbackQuery) -> None:
-    async with _import_lock:
-        try:
-            async with SessionLocal() as session:
-                result = await import_catalog(session)
-            await callback.message.answer(f"Импорт завершён: {result}")
-        except Exception:
-            await callback.message.answer("Импорт завершился с ошибкой. Подробность сохранена в import_runs и логах.")
+        await render(
+            callback,
+            "<b>Каталог</b>\nТовары загружаются разово скриптом на сервере:\n"
+            "<code>docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --markup 15</code>\n\n"
+            "Цены дальше меняются в веб-админке, раздел «Каталог».",
+            admin_menu(),
+        )
 
 
 @router.callback_query(F.data.startswith("supadm:"))
