@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command install for LVLUP.
+# One-command install for DKMARKET.
 #
 #   On a fresh Ubuntu/Debian server (as root, from the project folder):
 #       bash scripts/setup.sh
@@ -56,11 +56,11 @@ say "Настраиваю .env"
 echo "Токен — от НОВОГО бота из @BotFather. Токен другого бота использовать нельзя."
 ask BOT_TOKEN "BOT_TOKEN" hidden
 ask ADMIN_IDS "Ваш Telegram ID (узнать: @userinfobot), несколько — через запятую"
-ask SUPPORT_CONTACT "Контакт поддержки, например @lvlup_support"
+ask SUPPORT_CONTACT "Контакт поддержки, например @dkmarket_support"
 ask RESELLCODES_API_KEY "API-ключ ReSellCodes" hidden
 
-db_user=$(get_env POSTGRES_USER); db_user=${db_user:-lvlup}
-db_name=$(get_env POSTGRES_DB); db_name=${db_name:-lvlup}
+db_user=$(get_env POSTGRES_USER); db_user=${db_user:-dkmarket}
+db_name=$(get_env POSTGRES_DB); db_name=${db_name:-dkmarket}
 db_pass=$(get_env POSTGRES_PASSWORD)
 if is_placeholder "$db_pass"; then db_pass=$(secret 32); fi
 set_env POSTGRES_USER "$db_user"; set_env POSTGRES_DB "$db_name"; set_env POSTGRES_PASSWORD "$db_pass"

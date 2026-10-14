@@ -1,4 +1,4 @@
-"""Render the section banners: a retro arcade scene (neon sun, perspective grid) per section colour.
+"""Render the DKMARKET banners and logo: a neon dragon over a retro sun and grid, one colour per section.
 
 Run locally after changing the section list:
     python -m scripts.make_banners
@@ -12,14 +12,16 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+from scripts.dragon import draw_dragon
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "banners"
 SIZE = (1280, 720)
-BRAND = "LVLUP"
+BRAND = "DKMARKET"
 
 # key: (title, subtitle, primary RGB, secondary RGB)
 SECTIONS: dict[str, tuple[str, str, tuple[int, int, int], tuple[int, int, int]]] = {
-    "menu": ("LVLUP", "Донат в любимые игры", (255, 70, 160), (255, 190, 60)),
+    "menu": ("DKMARKET", "Донат в любимые игры", (255, 70, 160), (255, 190, 60)),
     "topup": ("TOP-UP", "Валюта на игровой аккаунт", (255, 60, 120), (255, 170, 40)),
     "roblox": ("ROBLOX", "Robux и карты Roblox", (255, 50, 60), (255, 140, 90)),
     "cards": ("GAME CARDS", "PlayStation · Xbox · Nintendo", (90, 120, 255), (60, 220, 255)),
@@ -119,6 +121,8 @@ def render(title: str, subtitle: str, primary, secondary, number: int) -> Image.
         image = ImageChops.add(image, glow(layer, blur, strength))
         image = ImageChops.lighter(image, layer)
 
+    image = draw_dragon(image, (730, 180, 545), (18, 8, 30), primary, secondary, width=4)
+
     # Dark panel on the left keeps the text readable.
     shade = Image.new("L", SIZE)
     shade_draw = ImageDraw.Draw(shade)
@@ -138,7 +142,7 @@ def render(title: str, subtitle: str, primary, secondary, number: int) -> Image.
 
     small = ImageFont.truetype(str(TEXT_FONT), 26)
     sub_font = ImageFont.truetype(str(TEXT_FONT), 40)
-    tag = f"{BRAND} · GAME TOP-UP"
+    tag = f"{BRAND} · GAME STORE"
     draw.rounded_rectangle([margin, 62, margin + 44 + small.getlength(tag), 104], radius=21, outline=secondary, width=3)
     draw.text((margin + 22, 69), tag, font=small, fill=(255, 245, 230))
     draw.text((margin, title_y + title_font.size + 30), subtitle, font=sub_font, fill=secondary)
@@ -146,8 +150,37 @@ def render(title: str, subtitle: str, primary, secondary, number: int) -> Image.
     return image
 
 
+def logo(size: int = 640) -> Image.Image:
+    """Round-friendly avatar for @BotFather: the dragon in front of the striped sun."""
+    primary, secondary = SECTIONS["menu"][2], SECTIONS["menu"][3]
+    image = Image.new("RGB", (size, size), (10, 6, 24))
+    draw = ImageDraw.Draw(image)
+    for y in range(size):
+        draw.line([(0, y), (size, y)], fill=mix((10, 6, 24), mix((20, 8, 40), primary, 0.35), (y / size) ** 1.8))
+    sun_layer = Image.new("RGB", (size, size))
+    sun_draw = ImageDraw.Draw(sun_layer)
+    cx, cy, r = size * 0.52, size * 0.5, size * 0.36
+    for y in range(int(cy - r), int(cy + r)):
+        half = math.sqrt(max(0.0, r * r - (y - cy) ** 2))
+        t = (y - (cy - r)) / (2 * r)
+        if not (t > 0.55 and (y // 12) % 3 == 0):
+            sun_draw.line([(cx - half, y), (cx + half, y)], fill=mix(secondary, primary, t))
+    image = ImageChops.add(image, glow(sun_layer, 26, 0.8))
+    image = ImageChops.lighter(image, sun_layer)
+    image = draw_dragon(image, (size * 0.04, size * 0.1, size * 0.92), (18, 8, 30), primary, secondary, width=6)
+    # Everything outside the circle is cleared so the avatar stays clean after Telegram's round crop.
+    inside = Image.new("L", (size, size))
+    ImageDraw.Draw(inside).ellipse([0, 0, size - 1, size - 1], fill=255)
+    image = Image.composite(image, Image.new("RGB", (size, size), (10, 6, 24)), inside)
+    ring = Image.new("L", (size, size))
+    ImageDraw.Draw(ring).ellipse([6, 6, size - 6, size - 6], outline=255, width=10)
+    return Image.composite(Image.new("RGB", (size, size), primary), image, ring)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    logo().save(ROOT / "assets" / "logo.png", optimize=True)
+    print("assets/logo.png  (аватарка: @BotFather → /setuserpic)")
     for number, (key, spec) in enumerate(SECTIONS.items(), start=1):
         path = OUT / f"{key}.jpg"
         render(*spec, number=number).save(path, "JPEG", quality=86, optimize=True, progressive=True)

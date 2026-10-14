@@ -1,4 +1,4 @@
-# Запуск LVLUP
+# Запуск DKMARKET
 
 Всё ставится одной командой `scripts/setup.sh`. Скрипт спрашивает токен бота, ваш Telegram ID, контакт поддержки, ключ ReSellCodes и пароль админки. Пароль базы и секреты он генерирует сам, затем собирает и запускает контейнеры: бот, PostgreSQL, ежедневные бэкапы, админку. Повторный запуск безопасен: Enter оставляет текущие значения.
 
@@ -25,7 +25,7 @@ bash scripts/setup.sh --local
 ```bash
 ssh root@<IP сервера>
 apt-get update && apt-get install -y git
-git clone <репозиторий LVLUP> ~/lvlup && cd ~/lvlup
+git clone <репозиторий DKMARKET> ~/dkmarket && cd ~/dkmarket
 bash scripts/setup.sh
 ```
 
@@ -38,17 +38,17 @@ docker compose run --rm bot python -m scripts.snapshot_import --probe
 docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --markup 15
 ```
 
-Если ключ ReSellCodes общий с другим ботом, у них общий дневной лимит поставщика (5000 запросов). Полная выгрузка LVLUP тратит примерно 300–700.
+Если ключ ReSellCodes общий с другим ботом, у них общий дневной лимит поставщика (5000 запросов). Полная выгрузка DKMARKET тратит примерно 300–700.
 
 ## Обновление кода
 
 ```bash
-cd ~/lvlup && git pull && docker compose --profile public up -d --build
+cd ~/dkmarket && git pull && docker compose --profile public up -d --build
 ```
 
 ## Бэкапы
 
-Контейнер `db-backup` раз в сутки делает дамп базы и хранит дампы 14 дней (том `lvlup_postgres_backups`). Копируйте их в отдельное хранилище и хотя бы раз проверьте восстановление:
+Контейнер `db-backup` раз в сутки делает дамп базы и хранит дампы 14 дней (том `dkmarket_postgres_backups`). Копируйте их в отдельное хранилище и хотя бы раз проверьте восстановление:
 
 ```bash
 docker compose exec db-backup ls -lh /backups

@@ -7,9 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     bot_token: str = ""
-    database_url: str = "postgresql+asyncpg://lvlup:change_me@db:5432/lvlup"
+    database_url: str = "postgresql+asyncpg://dkmarket:change_me@db:5432/dkmarket"
     admin_ids: str = ""
-    store_name: str = "LVLUP"
+    store_name: str = "DKMARKET"
     support_contact: str = "@support"
     rules_text: str = "Перед оформлением проверьте название, регион и цену выбранного товара."
     legal_document_date: str = "12 октября 2026 года"
