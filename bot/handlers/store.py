@@ -19,7 +19,7 @@ from bot.states import CartInput, Checkout, Search
 from config import get_settings
 from database.models import Category, GameAccount, Order, Product, PromoCode, User
 from database.session import SessionLocal
-from services import cart_service, catalog_service, order_service
+from services import cart_service, catalog_service, order_service, value_service
 from services.legal import payment_and_refunds, prices_and_tariffs, privacy_policy, service_rules, terms_of_service
 
 router = Router()
@@ -75,26 +75,49 @@ def status_text(status: str) -> str:
     return {"pending_payment": "ожидает оплаты", "paid_test": "оплачен", "cancelled": "отменён"}.get(status, status)
 
 
-def product_text(product: Product) -> str:
+FIELD_LABELS = {
+    "player id": "ID игрока", "user id": "ID игрока", "uid": "UID игрока", "role id": "ID персонажа",
+    "server id": "ID сервера", "zone id": "ID зоны", "server": "Сервер", "username": "Ник в игре",
+    "roblox username": "Ник в Roblox", "riot id": "Riot ID", "email": "Email аккаунта",
+}
+VARIANT_DELIVERY = {
+    "auto": "автоматически, обычно за пару минут", "fast": "быстро, в приоритете",
+    "manual": "вручную оператором — чуть дольше", "reserve": "резервным способом",
+}
+
+
+def product_text(product: Product, siblings: list[Product] | None = None) -> str:
     kind = PRODUCT_KINDS.get(product.product_type, product.product_type)
     fields = [f"<b>{escape(product.name)}</b>", kind, ""]
     for label, value in (("Платформа", product.platform), ("Регион", product.region), ("Способ выдачи", product.activation_type)):
         if value:
             fields.append(f"{label}: {escape(value)}")
-    if product.description:
+    # Raw supplier terms (English, "Условия поставщика") stay in the database for operators only.
+    if product.description and not product.description.startswith("Условия поставщика"):
         fields.append("\n" + escape(product.description[:500]))
     needed = [f["label"] for f in input_fields(product)]
-    if needed:
-        fields.append("\n📝 Понадобится: " + escape(", ".join(needed)))
+    if product.product_type == "game_topup" or needed:
+        variant = str(((product.raw_payload or {}).get("subcategory") or {}).get("variant") or "").casefold()
+        delivery = VARIANT_DELIVERY.get(variant, "прямо на ваш аккаунт")
+        steps = [f"Укажите {escape(', '.join(needed))} — бот запомнит" if needed else "Выберите пакет", "Оформите заказ", f"Пополнение придёт {delivery}"]
+        fields.append("\n⚡ <b>Как это работает</b>\n" + "\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1)) + "\n🔒 Пароль от аккаунта не нужен")
     fields.append(f"\n💰 Цена: <b>{catalog_service.money(product.price_minor, product.currency)}</b>")
+    value = value_service.value_line(product, siblings or [product])
+    if value:
+        fields.append(value)
     fields.append("✅ В наличии")
     return "\n".join(fields)
 
 
 def input_fields(product: Product) -> list[dict[str, str]]:
-    """Recipient data the supplier needs for this product (player ID, Telegram username…)."""
+    """Recipient data the supplier needs for this product (player ID, server…), with Russian labels."""
     raw = (product.raw_payload or {}).get("fields") or []
-    return [{"key": str(f.get("key")), "label": str(f.get("label") or f.get("key"))} for f in raw if isinstance(f, dict) and f.get("key")]
+    result = []
+    for f in raw:
+        if isinstance(f, dict) and f.get("key"):
+            label = str(f.get("label") or f.get("key"))
+            result.append({"key": str(f["key"]), "label": FIELD_LABELS.get(label.casefold(), label)})
+    return result
 
 
 def offer_label(product: Product) -> str:
@@ -235,6 +258,13 @@ async def category_page(callback: CallbackQuery) -> None:
     await show_category(callback, int(category_id), int(page))
 
 
+async def category_products(category_id: int | None) -> list[Product]:
+    if not category_id:
+        return []
+    async with SessionLocal() as session:
+        return list((await session.scalars(select(Product).where(Product.active, Product.category_id == category_id))).all())
+
+
 async def render_list(callback: CallbackQuery, category_id: int, page: int) -> None:
     async with SessionLocal() as session:
         products, total = await catalog_service.product_page(session, category_id, max(1, page), PAGE_SIZE)
@@ -247,7 +277,8 @@ async def render_list(callback: CallbackQuery, category_id: int, page: int) -> N
         return
     pages = max(1, math.ceil(total / PAGE_SIZE))
     page = min(page, pages)
-    buttons = [[(offer_label(p), f"prod:{p.id}:{category_id}:{page}")] for p in products]
+    best = value_service.best_value_ids(await category_products(category_id))
+    buttons = [[(("🔥 " if p.id in best else "") + offer_label(p), f"prod:{p.id}:{category_id}:{page}")] for p in products]
     controls = []
     if page > 1: controls.append(("⬅️", f"list:{category_id}:{page - 1}"))
     controls.append((f"{page}/{pages}", "noop"))
@@ -256,7 +287,7 @@ async def render_list(callback: CallbackQuery, category_id: int, page: int) -> N
     title = escape(category.name) if category else "Каталог"
     if parent:
         title = f"{escape(parent.name)} · {title}"
-    await render(callback, f"<b>{title}</b>\n{offers_count(total)} · страница {page} из {pages}\n<i>Сначала самые доступные</i>", kb(*buttons), banner)
+    await render(callback, f"<b>{title}</b>\n{offers_count(total)} · страница {page} из {pages}\n<i>Сначала самые доступные" + (" · 🔥 — выгоднее всего за единицу" if best else "") + "</i>", kb(*buttons), banner)
 
 
 @router.callback_query(F.data.startswith("list:"))
@@ -274,7 +305,8 @@ async def show_product(callback: CallbackQuery, item: Product, back: str, note: 
         await callback.answer()
     except Exception:
         pass
-    await panel.show(callback.bot, callback.message.chat.id, product_text(item) + note, product_keyboard(item, back),
+    siblings = await category_products(item.category_id)
+    await panel.show(callback.bot, callback.message.chat.id, product_text(item, siblings) + note, product_keyboard(item, back),
                      banner_for(item.product_type), message=panel.clicked(callback), image=item.image_url)
 
 

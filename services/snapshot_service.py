@@ -228,11 +228,10 @@ async def _brand_snapshot(
                 for offer in offers:
                     ok = await upsert_product(
                         session, target, product_type, f"{supplier_id}:{offer[offer_id_key]}", product_name(name, str(offer.get("name") or name)),
-                        {"brand": name, "subcategory": sub, "offer": offer, "fields": fields},
+                        {"brand": name, "subcategory": sub, "offer": offer, "fields": fields, "note": note},
                         price_usd=offer["price_usd"], price=(pricing.rub_minor(offer["price_usd"]), "RUB"),
                         image=sub_image, region=(sub.get("region") or "GLOBAL"), platform=name,
                         activation=activation, stock=offer.get("stock"),
-                        description=f"Условия поставщика:\n{note}" if note else None,
                     )
                     result.counters["imported" if ok else "skipped"] += 1
                 await session.commit()
