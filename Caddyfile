@@ -1,10 +1,9 @@
 {
-	# IP certificates are short-lived. Caddy renews them automatically.
+	# Certificates come from Let's Encrypt; the short-lived profile also covers bare IP addresses.
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
-	fallback_sni 2.27.42.108
 }
 
-https://2.27.42.108 {
+{$PUBLIC_HOST} {
 	tls {
 		issuer acme {
 			dir https://acme-v02.api.letsencrypt.org/directory

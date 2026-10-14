@@ -1,45 +1,55 @@
-# Деплой LVLUP рядом с первым ботом
+# Запуск LVLUP
 
-Второй бот — отдельный проект со своей базой, бэкапами и админкой. На том же сервере он живёт в своей папке; Docker Compose называет контейнеры и тома по имени папки, поэтому они не пересекаются с первым ботом.
+Всё ставится одной командой `scripts/setup.sh`. Скрипт спрашивает токен бота, ваш Telegram ID, контакт поддержки, ключ ReSellCodes и пароль админки. Пароль базы и секреты он генерирует сам, затем собирает и запускает контейнеры: бот, PostgreSQL, ежедневные бэкапы, админку. Повторный запуск безопасен: Enter оставляет текущие значения.
 
-## 1. Подготовка
+**Токен — только от нового бота из @BotFather.** Если один токен запущен в двух местах (например, локально и на сервере), бот работает с перебоями. Перед запуском на сервере остановите локальную копию: `docker compose down`.
 
-1. Создайте нового бота в @BotFather. **Токен первого бота использовать нельзя**: два процесса с одним токеном мешают друг другу получать сообщения.
-2. На сервере:
-   ```bash
-   git clone <репозиторий LVLUP> ~/lvlup && cd ~/lvlup
-   cp .env.example .env
-   ```
-3. В `.env` задайте: `BOT_TOKEN` (новый), `POSTGRES_PASSWORD` и тот же пароль в `DATABASE_URL`, `ADMIN_IDS`, `SUPPORT_CONTACT`, `RESELLCODES_API_KEY`, `ADMIN_JWT_SECRET` (случайная строка 32+ символов). `ADMIN_WEB_PORT=8081` — порт 8080 занят первым ботом.
-
-## 2. Запуск
+## Локальная проверка (Mac, Docker Desktop)
 
 ```bash
-docker compose up -d --build
-docker compose run --rm admin-api python -m admin_api.password   # хэш пароля → ADMIN_PASSWORD_HASH в .env
-docker compose up -d
-docker compose logs --tail=50 bot
+cd trader_bot_2
+bash scripts/setup.sh --local
 ```
 
-## 3. Каталог
+- Бот: откройте его в Telegram, нажмите /start.
+- Админка: http://localhost:8080.
+- Каталог для проверки можно загрузить с небольшим лимитом запросов:
+  ```bash
+  docker compose run --rm bot python -m scripts.snapshot_import --probe
+  docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --markup 15 --budget 300
+  ```
+- Логи: `docker compose logs -f bot`. Остановить: `docker compose down`. Удалить вместе с локальной базой: `docker compose down -v`.
+
+## Сервер (Ubuntu/Debian, отдельный)
+
+```bash
+ssh root@<IP сервера>
+apt-get update && apt-get install -y git
+git clone <репозиторий LVLUP> ~/lvlup && cd ~/lvlup
+bash scripts/setup.sh
+```
+
+Docker скрипт поставит сам. Адрес админки он спросит и подставит IP сервера. Админка откроется по `https://<IP или домен>`: Caddy сам получит сертификат Let's Encrypt. В панели провайдера должны быть открыты порты 80 и 443.
+
+Затем загрузите каталог:
 
 ```bash
 docker compose run --rm bot python -m scripts.snapshot_import --probe
 docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --markup 15
 ```
 
-Если API-ключ общий с первым ботом, у обоих общий дневной лимит поставщика (5000 запросов). Выгрузка LVLUP тратит примерно 300–700 запросов.
+Если ключ ReSellCodes общий с другим ботом, у них общий дневной лимит поставщика (5000 запросов). Полная выгрузка LVLUP тратит примерно 300–700.
 
-## 4. Админ-панель
-
-Профиль `public` с Caddy **не запускайте**: порты 80/443 уже заняты Caddy первого бота. Откройте панель через SSH-туннель со своего компьютера:
+## Обновление кода
 
 ```bash
-ssh -L 8081:127.0.0.1:8081 root@<IP сервера>
+cd ~/lvlup && git pull && docker compose --profile public up -d --build
 ```
 
-и затем http://localhost:8081. Для постоянного доступа позже можно привязать домен и добавить его в Caddy первого бота.
+## Бэкапы
 
-## 5. Бэкапы
+Контейнер `db-backup` раз в сутки делает дамп базы и хранит дампы 14 дней (том `lvlup_postgres_backups`). Копируйте их в отдельное хранилище и хотя бы раз проверьте восстановление:
 
-Контейнер `db-backup` раз в сутки делает дамп в том `lvlup_postgres_backups`, хранит 14 дней. Копируйте дампы в отдельное хранилище и хотя бы раз проверьте восстановление.
+```bash
+docker compose exec db-backup ls -lh /backups
+```

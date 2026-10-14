@@ -63,12 +63,14 @@ services:
       admin-api:
         condition: service_started
     ports:
-      - "${ADMIN_WEB_BIND:-127.0.0.1}:${ADMIN_WEB_PORT:-8081}:80"
+      - "${ADMIN_WEB_BIND:-127.0.0.1}:${ADMIN_WEB_PORT:-8080}:80"
     restart: unless-stopped
 
   caddy:
     image: caddy:2.11.6-alpine
     profiles: ["public"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
     dns:
       - 8.8.8.8
       - 8.8.4.4
