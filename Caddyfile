@@ -1,6 +1,9 @@
 {
 	# Certificates come from Let's Encrypt; the short-lived profile also covers bare IP addresses.
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	# Safari often omits SNI when the URL is a bare IP address. Serve the IP
+	# certificate that belongs to this deployment instead of failing TLS.
+	default_sni {$PUBLIC_HOST}
 }
 
 {$PUBLIC_HOST} {
