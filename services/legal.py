@@ -25,7 +25,9 @@ def _contact(settings: Settings) -> str:
 def _seller(settings: Settings) -> str:
     if settings.legal_seller_details.strip():
         return escape(settings.legal_seller_details)
-    return "не указан; до включения оплаты заполните LEGAL_SELLER_DETAILS"
+    # Environment-variable names are implementation details and must never
+    # appear in customer-facing legal text.
+    return "будет указан до подключения приёма оплаты"
 
 
 def _payment_status(settings: Settings) -> str:

@@ -32,9 +32,17 @@ SECTIONS: dict[str, tuple[str, str, tuple[int, int, int]]] = {
     "docs": ("ДОКУМЕНТЫ", "Прозрачные условия сервиса", (140, 191, 204)),
 }
 
-FONT_DIR = Path("/System/Library/Fonts/Supplemental")
-TITLE_FONT = FONT_DIR / "Arial Bold.ttf"
-TEXT_FONT = FONT_DIR / "Arial.ttf"
+def system_font(bold: bool) -> Path:
+    # Use macOS Arial locally and DejaVu on Linux/CI.
+    candidates = (
+        [Path("/System/Library/Fonts/Supplemental") / ("Arial Bold.ttf" if bold else "Arial.ttf"),
+         Path("/usr/share/fonts/truetype/dejavu") / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")]
+    )
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
+TITLE_FONT = system_font(bold=True)
+TEXT_FONT = system_font(bold=False)
 
 
 def mix(a, b, t: float):
@@ -95,28 +103,39 @@ def background(color: tuple[int, int, int], seed: int) -> Image.Image:
 
 def render(title: str, subtitle: str, color: tuple[int, int, int], number: int) -> Image.Image:
     image = background(color, number).convert("RGBA")
+    # Telegram can place a round chat/avatar control over the upper-left part of
+    # a photo. Keep this 220×170 area deliberately free of text or logos.
     lights = Image.new("RGBA", SIZE)
     light_draw = ImageDraw.Draw(lights)
-    for radius, alpha in ((390, 38), (250, 50), (120, 75)):
-        light_draw.ellipse((770 - radius, 355 - radius, 770 + radius, 355 + radius), fill=(*color, alpha))
+    for radius, alpha in ((330, 34), (210, 46), (100, 65)):
+        light_draw.ellipse((955 - radius, 370 - radius, 955 + radius, 370 + radius), fill=(*color, alpha))
     image = Image.alpha_composite(image, lights.filter(ImageFilter.GaussianBlur(45)))
-    emblem = shield_layer(SIZE, color, (760, 102, 1120, 555))
+    emblem = shield_layer(SIZE, color, (840, 150, 1110, 490))
     image = Image.alpha_composite(image, emblem.filter(ImageFilter.GaussianBlur(28)))
     image = Image.alpha_composite(image, emblem)
-    add_check(image, (845, 292, 1037, 432))
+    add_check(image, (902, 292, 1050, 400))
+
+    # Thin interface accents give the composition a deliberate, game-like grid
+    # without competing with the heading or the shield.
+    accents = Image.new("RGBA", SIZE)
+    accent_draw = ImageDraw.Draw(accents)
+    accent_draw.line([(100, 180), (620, 180)], fill=(*color, 145), width=2)
+    accent_draw.line([(100, 181), (260, 181)], fill=(*GOLD, 220), width=3)
+    accent_draw.line([(100, 530), (575, 530)], fill=(*color, 80), width=2)
+    accent_draw.ellipse((1110, 466, 1122, 478), fill=(*GOLD, 230))
+    image = Image.alpha_composite(image, accents)
     veil = Image.new("L", SIZE)
     veil_draw = ImageDraw.Draw(veil)
-    for x in range(SIZE[0]):
-        veil_draw.line([(x, 0), (x, SIZE[1])], fill=round(225 * max(0, 1 - x / 700) ** 1.6))
+    for x in range(760):
+        veil_draw.line([(x, 0), (x, SIZE[1])], fill=round(205 * max(0, 1 - x / 760) ** 1.6))
     image = Image.composite(Image.new("RGBA", SIZE, (*NAVY, 255)), image, veil)
     draw = ImageDraw.Draw(image)
-    tag_font = ImageFont.truetype(str(TITLE_FONT), 22)
-    draw.rounded_rectangle((70, 62, 390, 106), radius=22, outline=(*GOLD, 220), width=2)
-    draw.text((92, 72), "HONESTPLAY  ·  GAME STORE", font=tag_font, fill=WHITE)
-    title_font = fitted_font(TITLE_FONT, title, 610, 82)
-    draw.text((70, 250), title, font=title_font, fill=WHITE)
-    draw.text((72, 250 + title_font.size + 25), subtitle, font=fitted_font(TEXT_FONT, subtitle, 580, 31), fill=mix(color, WHITE, .6))
-    draw.text((72, 645), "ПРОВЕРЕННЫЙ ВЫБОР", font=tag_font, fill=mix(GOLD, WHITE, .45))
+    label_font = ImageFont.truetype(str(TITLE_FONT), 20)
+    draw.text((100, 136), "HONESTPLAY", font=label_font, fill=mix(GOLD, WHITE, .45))
+    title_font = fitted_font(TITLE_FONT, title, 650, 76)
+    draw.text((100, 230), title, font=title_font, fill=WHITE)
+    draw.text((102, 230 + title_font.size + 26), subtitle, font=fitted_font(TEXT_FONT, subtitle, 610, 30), fill=mix(color, WHITE, .62))
+    draw.text((102, 565), "ЦИФРОВЫЕ ИГРЫ · БЫСТРО · ПОНЯТНО", font=label_font, fill=mix(GOLD, WHITE, .40))
     return image.convert("RGB")
 
 
