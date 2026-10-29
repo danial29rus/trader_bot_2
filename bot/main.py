@@ -5,7 +5,7 @@ from time import perf_counter
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import ErrorEvent
+from aiogram.types import BotCommand, ErrorEvent
 from sqlalchemy import text
 
 from bot.handlers import admin, store, support
@@ -15,6 +15,29 @@ from database.session import engine
 
 
 logger = logging.getLogger(__name__)
+
+BOT_COMMANDS = [
+    BotCommand(command="start", description="Открыть магазин"),
+    BotCommand(command="help", description="Как пользоваться ботом"),
+    BotCommand(command="support", description="Написать в поддержку"),
+    BotCommand(command="paysupport", description="Вопрос по оплате"),
+    BotCommand(command="documents", description="Документы и правила"),
+    BotCommand(command="privacy", description="Политика конфиденциальности"),
+    BotCommand(command="agreement", description="Пользовательское соглашение"),
+    BotCommand(command="offer", description="Публичная оферта"),
+    BotCommand(command="returns", description="Возвраты и отмена"),
+    BotCommand(command="contacts", description="Контакты поддержки"),
+    BotCommand(command="prices", description="Цены и тарифы"),
+]
+
+
+async def configure_commands(bot: Bot) -> None:
+    """Publish the command menu shown when a customer types '/' in Telegram."""
+    try:
+        await bot.set_my_commands(BOT_COMMANDS)
+    except Exception:
+        # A temporary Telegram API failure must not stop the shop from starting.
+        logger.exception("Could not update Telegram command menu")
 
 
 class SlowUpdateMiddleware(BaseMiddleware):
@@ -76,6 +99,7 @@ async def main() -> None:
     dp.update.outer_middleware(SlowUpdateMiddleware())
     dp.errors.register(recover_stale_screen)
     await bot.delete_webhook(drop_pending_updates=False)
+    await configure_commands(bot)
     warm_task = asyncio.create_task(keep_warm(bot))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

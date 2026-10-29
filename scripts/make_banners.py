@@ -7,10 +7,11 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "banners"
+MASTER_ART = ROOT / "assets" / "banner_master.png"
 SIZE = (1280, 720)
 BRAND = "HonestPlay"
 NAVY, TEAL, CYAN, GOLD, WHITE = (5, 19, 37), (12, 169, 170), (48, 214, 215), (232, 185, 90), (244, 248, 255)
@@ -102,47 +103,40 @@ def background(color: tuple[int, int, int], seed: int) -> Image.Image:
 
 
 def render(title: str, subtitle: str, color: tuple[int, int, int], number: int) -> Image.Image:
-    image = background(color, number).convert("RGBA")
-    # Telegram can place a round chat/avatar control over the upper-left part of
-    # a photo. Keep this 220×170 area deliberately free of text or logos.
-    lights = Image.new("RGBA", SIZE)
-    light_draw = ImageDraw.Draw(lights)
-    for radius, alpha in ((330, 34), (210, 46), (100, 65)):
-        light_draw.ellipse((955 - radius, 370 - radius, 955 + radius, 370 + radius), fill=(*color, alpha))
-    image = Image.alpha_composite(image, lights.filter(ImageFilter.GaussianBlur(45)))
-    emblem = shield_layer(SIZE, color, (840, 150, 1110, 490))
-    image = Image.alpha_composite(image, emblem.filter(ImageFilter.GaussianBlur(28)))
-    image = Image.alpha_composite(image, emblem)
-    add_check(image, (902, 292, 1050, 400))
+    if MASTER_ART.exists():
+        # The artwork is intentionally text-free. Crop it to Telegram's 16:9
+        # media card while preserving the emblem on the right.
+        image = ImageOps.fit(Image.open(MASTER_ART).convert("RGB"), SIZE, method=Image.Resampling.LANCZOS, centering=(.50, .44)).convert("RGBA")
+    else:
+        image = background(color, number).convert("RGBA")
 
-    # Thin interface accents give the composition a deliberate, game-like grid
-    # without competing with the heading or the shield.
-    accents = Image.new("RGBA", SIZE)
-    accent_draw = ImageDraw.Draw(accents)
-    accent_draw.line([(100, 180), (620, 180)], fill=(*color, 145), width=2)
-    accent_draw.line([(100, 181), (260, 181)], fill=(*GOLD, 220), width=3)
-    accent_draw.line([(100, 530), (575, 530)], fill=(*color, 80), width=2)
-    accent_draw.ellipse((1110, 466, 1122, 478), fill=(*GOLD, 230))
-    image = Image.alpha_composite(image, accents)
-    veil = Image.new("L", SIZE)
-    veil_draw = ImageDraw.Draw(veil)
-    for x in range(760):
-        veil_draw.line([(x, 0), (x, SIZE[1])], fill=round(205 * max(0, 1 - x / 760) ** 1.6))
-    image = Image.composite(Image.new("RGBA", SIZE, (*NAVY, 255)), image, veil)
+    # Deepen only the copy area; the artwork and its right-side emblem remain
+    # untouched. The upper-left 220×170 stays free for Telegram's round avatar.
+    overlay = Image.new("RGBA", SIZE, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle((0, 0, 760, SIZE[1]), fill=(*NAVY, 104))
+    overlay_draw.rectangle((0, 0, 220, 170), fill=(*NAVY, 48))
+    image = Image.alpha_composite(image, overlay)
     draw = ImageDraw.Draw(image)
     label_font = ImageFont.truetype(str(TITLE_FONT), 20)
-    draw.text((100, 136), "HONESTPLAY", font=label_font, fill=mix(GOLD, WHITE, .45))
+    draw.text((100, 136), "HONESTPLAY", font=label_font, fill=mix(GOLD, WHITE, .60))
+    draw.line((100, 180, 610, 180), fill=(*color, 150), width=2)
+    draw.line((100, 180, 255, 180), fill=(*GOLD, 230), width=3)
     title_font = fitted_font(TITLE_FONT, title, 650, 76)
     draw.text((100, 230), title, font=title_font, fill=WHITE)
     draw.text((102, 230 + title_font.size + 26), subtitle, font=fitted_font(TEXT_FONT, subtitle, 610, 30), fill=mix(color, WHITE, .62))
-    draw.text((102, 565), "ЦИФРОВЫЕ ИГРЫ · БЫСТРО · ПОНЯТНО", font=label_font, fill=mix(GOLD, WHITE, .40))
+    draw.text((102, 565), "ЦИФРОВЫЕ ИГРЫ · БЫСТРО · ПОНЯТНО", font=label_font, fill=mix(GOLD, WHITE, .54))
     return image.convert("RGB")
 
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    logo().save(ROOT / "assets" / "logo.png", optimize=True)
-    print("assets/logo.png  (аватарка: @BotFather → /setuserpic)")
+    logo_path = ROOT / "assets" / "logo.png"
+    if not logo_path.exists():
+        logo().save(logo_path, optimize=True)
+        print("assets/logo.png  (аватарка: @BotFather → /setuserpic)")
+    else:
+        print("assets/logo.png  (existing avatar preserved)")
     for number, (key, spec) in enumerate(SECTIONS.items(), start=1):
         path = OUT / f"{key}.jpg"
         render(*spec, number).save(path, "JPEG", quality=88, optimize=True, progressive=True)

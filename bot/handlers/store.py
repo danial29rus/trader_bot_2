@@ -866,6 +866,32 @@ async def documents(callback: CallbackQuery) -> None:
     )
 
 
+@router.message(Command("documents", "rules"))
+async def documents_command(message: Message) -> None:
+    await reply(
+        message,
+        "<b>Документы и правила</b>\n"
+        "Здесь всегда доступны условия использования, обработки данных, цены и правила оплаты.",
+        documents_keyboard(),
+        "docs",
+    )
+
+
+@router.message(Command("help", "commands"))
+async def help_command(message: Message) -> None:
+    await reply(
+        message,
+        "<b>Как пользоваться ботом</b>\n\n"
+        "🛍 <b>Каталог</b> — выберите игру или карту, проверьте регион и цену.\n"
+        "🛒 <b>Корзина</b> — меняйте количество, вводите промокод и смотрите итог.\n"
+        "💬 <b>Поддержка</b> — команда /support или кнопка в меню; для вопроса по оплате — /paysupport.\n"
+        "📄 <b>Документы</b> — команда /documents: конфиденциальность, оферта, возвраты, цены и контакты.\n\n"
+        "Введите <code>/</code>, чтобы Telegram показал все быстрые команды.",
+        kb([("🛍 Открыть каталог", "menu"), ("📄 Документы", "documents")], [("💬 Поддержка", "support")]),
+        "menu",
+    )
+
+
 @router.callback_query(F.data.startswith("doc:"))
 async def document(callback: CallbackQuery) -> None:
     code = callback.data.split(":", 1)[1]
