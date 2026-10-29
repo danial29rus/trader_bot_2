@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from html import escape
 from typing import Annotated
+from uuid import uuid4
 
 import httpx
 import jwt
@@ -18,10 +19,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from admin_api.settings import get_admin_settings
-from database.models import Order, Product, PromoCode, SupportMessage, SupportTicket, User
+from database.models import Order, OrderItem, Product, PromoCode, SupportMessage, SupportTicket, User
 from database.session import SessionLocal
 from config import get_settings
 from services.legal import contacts, payment_and_refunds, prices_and_tariffs, privacy_policy, returns_policy, terms_of_service
+from services.order_service import is_promo_available, normalize_promo_code
 
 app = FastAPI(title="HonestPlay Admin API", docs_url=None, redoc_url=None)
 bearer = HTTPBearer(auto_error=False)
@@ -87,6 +89,14 @@ class RepricePayload(BaseModel):
     rub_per_usd: Decimal = Field(gt=0, le=10_000)
     markup_percent: Decimal = Field(ge=-50, le=500)
     include_locked: bool = False
+
+
+class ManualOrderPayload(BaseModel):
+    user_id: int = Field(gt=0)
+    product_id: int = Field(gt=0)
+    quantity: int = Field(default=1, ge=1, le=100)
+    promo_code: str | None = Field(default=None, max_length=40)
+    use_bonus: bool = False
 
 
 def as_iso(value: datetime | None) -> str | None:
@@ -217,12 +227,20 @@ async def dashboard(_: Admin) -> dict:
 
 
 @app.get("/api/users")
-async def users(_: Admin, limit: int = 100, offset: int = 0) -> dict:
+async def users(_: Admin, query: str = "", limit: int = 100, offset: int = 0) -> dict:
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
     async with SessionLocal() as session:
-        total = await session.scalar(select(func.count(User.id))) or 0
-        rows = list((await session.scalars(select(User).order_by(User.created_at.desc()).offset(offset).limit(limit))).all())
+        stmt = select(User)
+        if query.strip():
+            needle = query.strip()
+            conditions = [User.first_name.ilike(f"%{needle}%"), User.username.ilike(f"%{needle}%")]
+            if needle.lstrip("-").isdigit():
+                conditions.append(User.telegram_id == int(needle))
+            from sqlalchemy import or_
+            stmt = stmt.where(or_(*conditions))
+        total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        rows = list((await session.scalars(stmt.order_by(User.created_at.desc()).offset(offset).limit(limit))).all())
     return {"total": total, "items": [{**user_data(item), "created_at": as_iso(item.created_at)} for item in rows]}
 
 
@@ -258,7 +276,7 @@ async def orders(_: Admin, limit: int = 100, offset: int = 0) -> dict:
 
 
 @app.get("/api/products")
-async def products(_: Admin, query: str = "", product_type: str = "", limit: int = 200) -> dict:
+async def products(_: Admin, query: str = "", product_type: str = "", region: str = "", active: str = "", locked: str = "", limit: int = 200) -> dict:
     limit = min(max(limit, 1), 200)
     async with SessionLocal() as session:
         stmt = select(Product).order_by(Product.active.desc(), Product.name.asc()).limit(limit)
@@ -266,6 +284,16 @@ async def products(_: Admin, query: str = "", product_type: str = "", limit: int
             stmt = stmt.where(Product.name.ilike(f"%{query.strip()}%"))
         if product_type:
             stmt = stmt.where(Product.product_type == product_type)
+        if region.strip():
+            stmt = stmt.where(Product.region.ilike(f"%{region.strip()}%"))
+        if active == "true":
+            stmt = stmt.where(Product.active.is_(True))
+        elif active == "false":
+            stmt = stmt.where(Product.active.is_(False))
+        if locked == "true":
+            stmt = stmt.where(Product.price_locked.is_(True))
+        elif locked == "false":
+            stmt = stmt.where(Product.price_locked.is_(False))
         rows = list((await session.scalars(stmt)).all())
     return {"items": [product_data(item) for item in rows]}
 
@@ -295,6 +323,52 @@ async def set_product_price(product_id: int, payload: ProductPricePayload, _: Ad
         await session.flush()
         data = product_data(item)
     return data
+
+
+@app.post("/api/manual-orders", status_code=status.HTTP_201_CREATED)
+async def create_manual_order(payload: ManualOrderPayload, _: Admin) -> dict:
+    """Record an operator-created order without charging or ordering from a supplier."""
+    async with SessionLocal() as session, session.begin():
+        customer = await session.scalar(select(User).where(User.id == payload.user_id).with_for_update())
+        product = await session.get(Product, payload.product_id)
+        if not customer:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        if not product or not product.active or product.currency != "RUB":
+            raise HTTPException(status_code=422, detail="Выберите доступный товар с ценой в RUB")
+        subtotal = product.price_minor * payload.quantity
+        promo = None
+        promo_discount = 0
+        code = normalize_promo_code(payload.promo_code)
+        if code:
+            promo = await session.scalar(select(PromoCode).where(PromoCode.code == code).with_for_update())
+            if not promo or not is_promo_available(promo):
+                raise HTTPException(status_code=422, detail="Промокод недействителен или его лимит исчерпан")
+            promo_discount = subtotal * promo.discount_percent // 100
+            promo.used_count += 1
+        after_promo = subtotal - promo_discount
+        bonus_used = min(customer.bonus_balance_minor, after_promo) if payload.use_bonus else 0
+        customer.bonus_balance_minor -= bonus_used
+        total = after_promo - bonus_used
+        order = Order(
+            public_number=f"M-{uuid4().hex[:10].upper()}", user_id=customer.id,
+            status="manual", payment_method="manual", subtotal_minor=subtotal,
+            promo_code=promo.code if promo else None, promo_discount_minor=promo_discount,
+            # A manual order is not a confirmed payment, so it never accrues
+            # new bonuses automatically. It can still spend the customer's balance.
+            bonus_used_minor=bonus_used, bonus_accrued_minor=0,
+            total_minor=total, currency="RUB",
+        )
+        session.add(order)
+        await session.flush()
+        session.add(OrderItem(
+            order_id=order.id, product_id=product.id, product_name_snapshot=product.name,
+            configuration_snapshot={"source": "admin_manual"}, unit_price_minor=product.price_minor,
+            quantity=payload.quantity, total_minor=total,
+        ))
+        await session.flush()
+        result = {"id": order.id, "public_number": order.public_number, "subtotal_minor": order.subtotal_minor, "promo_discount_minor": order.promo_discount_minor, "bonus_used_minor": order.bonus_used_minor, "total_minor": order.total_minor, "currency": order.currency}
+    await send_telegram(customer, f"<b>Создан ручной заказ {escape(result['public_number'])}</b>\n\n{escape(product.name)} × {payload.quantity}\nК оплате: <b>{result['total_minor'] / 100:.2f} RUB</b>\n\nОператор свяжется с вами по дальнейшим действиям.")
+    return result
 
 
 @app.post("/api/products/reprice")

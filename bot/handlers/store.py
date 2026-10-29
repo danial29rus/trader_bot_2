@@ -72,7 +72,7 @@ def banner_for(kind: str | None) -> str:
 
 
 def status_text(status: str) -> str:
-    return {"pending_payment": "ожидает оплаты", "paid_test": "оплачен", "cancelled": "отменён"}.get(status, status)
+    return {"pending_payment": "ожидает оплаты", "paid_test": "оплачен", "paid": "оплачен", "manual": "ручной заказ", "cancelled": "отменён"}.get(status, status)
 
 
 FIELD_LABELS = {
