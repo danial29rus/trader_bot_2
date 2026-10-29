@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command install for DKMARKET.
+# One-command install for HonestPlay.
 #
 #   On a fresh Ubuntu/Debian server (as root, from the project folder):
 #       bash scripts/setup.sh
@@ -56,7 +56,7 @@ say "Настраиваю .env"
 echo "Токен — от НОВОГО бота из @BotFather. Токен другого бота использовать нельзя."
 ask BOT_TOKEN "BOT_TOKEN" hidden
 ask ADMIN_IDS "Ваш Telegram ID (узнать: @userinfobot), несколько — через запятую"
-ask SUPPORT_CONTACT "Контакт поддержки, например @dkmarket_support"
+ask SUPPORT_CONTACT "Контакт поддержки, например @honestplay_support"
 ask RESELLCODES_API_KEY "API-ключ ReSellCodes" hidden
 
 db_user=$(get_env POSTGRES_USER); db_user=${db_user:-dkmarket}

@@ -20,7 +20,7 @@ from config import get_settings
 from database.models import Category, GameAccount, Order, Product, PromoCode, User
 from database.session import SessionLocal
 from services import cart_service, catalog_service, order_service, value_service
-from services.legal import payment_and_refunds, prices_and_tariffs, privacy_policy, service_rules, terms_of_service
+from services.legal import contacts, payment_and_refunds, prices_and_tariffs, privacy_policy, returns_policy, terms_of_service
 
 router = Router()
 settings = get_settings()
@@ -133,11 +133,24 @@ def documents_keyboard():
     return kb(
         [("🔒 Конфиденциальность", "doc:privacy")],
         [("📜 Пользовательское соглашение", "doc:terms")],
+        [("🧾 Публичная оферта", "doc:offer")],
+        [("↩️ Отмена и возвраты", "doc:returns")],
+        [("💬 Контакты поддержки", "doc:contacts")],
         [("💳 Цены и тарифы", "doc:prices")],
-        [("↩️ Оплата и отмена", "doc:payments")],
-        [("🛡 Правила сервиса", "doc:rules")],
         nav(),
     )
+
+
+DOCUMENT_BUILDERS = {
+    "privacy": privacy_policy,
+    "terms": terms_of_service,
+    "offer": payment_and_refunds,
+    # The checkout screen uses this shorter, user-facing name for the offer.
+    "payments": payment_and_refunds,
+    "returns": returns_policy,
+    "contacts": contacts,
+    "prices": prices_and_tariffs,
+}
 
 
 async def main_text() -> str:
@@ -856,18 +869,50 @@ async def documents(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("doc:"))
 async def document(callback: CallbackQuery) -> None:
     code = callback.data.split(":", 1)[1]
-    texts = {
-        "privacy": privacy_policy,
-        "terms": terms_of_service,
-        "prices": prices_and_tariffs,
-        "payments": payment_and_refunds,
-        "rules": service_rules,
-    }
-    builder = texts.get(code)
+    builder = DOCUMENT_BUILDERS.get(code)
     if not builder:
         await callback.answer("Документ не найден", show_alert=True)
         return
     await render(callback, builder(settings), kb([("⬅️ К документам", "documents"), ("🏠 Меню", "menu")]), "docs")
+
+
+async def command_document(message: Message, builder) -> None:
+    await reply(message, builder(settings), kb([("📄 Все документы", "documents"), ("🏠 Меню", "menu")]), "docs")
+
+
+@router.message(Command("privacy"))
+async def privacy_command(message: Message) -> None:
+    await command_document(message, privacy_policy)
+
+
+@router.message(Command("agreement"))
+async def agreement_command(message: Message) -> None:
+    await command_document(message, terms_of_service)
+
+
+@router.message(Command("offer"))
+async def offer_command(message: Message) -> None:
+    await command_document(message, payment_and_refunds)
+
+
+@router.message(Command("returns"))
+async def returns_command(message: Message) -> None:
+    await command_document(message, returns_policy)
+
+
+@router.message(Command("contacts"))
+async def contacts_command(message: Message) -> None:
+    await command_document(message, contacts)
+
+
+@router.message(Command("prices"))
+async def prices_command(message: Message) -> None:
+    await command_document(message, prices_and_tariffs)
+
+
+@router.message(Command("terms"))
+async def terms_command(message: Message) -> None:
+    await reply(message, "<b>Документы и правила</b>\nВыберите документ.", documents_keyboard(), "docs")
 
 
 @router.callback_query(F.data == "support")

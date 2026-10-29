@@ -1,180 +1,123 @@
-"""Render the DKMARKET banners and logo: a neon dragon over a retro sun and grid, one colour per section.
+"""Render the HonestPlay logo and in-bot banners.
 
-Run locally after changing the section list:
-    python -m scripts.make_banners
-Pillow is a dev-only dependency; the bot itself only sends the generated JPEGs.
+Run with ``python -m scripts.make_banners`` after installing requirements-dev.
 """
 from __future__ import annotations
 
-import math
 import random
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
-
-from scripts.dragon import draw_dragon
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "banners"
 SIZE = (1280, 720)
-BRAND = "DKMARKET"
+BRAND = "HonestPlay"
+NAVY, TEAL, CYAN, GOLD, WHITE = (5, 19, 37), (12, 169, 170), (48, 214, 215), (232, 185, 90), (244, 248, 255)
 
-# key: (title, subtitle, primary RGB, secondary RGB)
-SECTIONS: dict[str, tuple[str, str, tuple[int, int, int], tuple[int, int, int]]] = {
-    "menu": ("DKMARKET", "Донат в любимые игры", (255, 70, 160), (255, 190, 60)),
-    "topup": ("TOP-UP", "Валюта на игровой аккаунт", (255, 60, 120), (255, 170, 40)),
-    "roblox": ("ROBLOX", "Robux и карты Roblox", (255, 50, 60), (255, 140, 90)),
-    "cards": ("GAME CARDS", "PlayStation · Xbox · Nintendo", (90, 120, 255), (60, 220, 255)),
-    "keys": ("GAME KEYS", "Ключи для консолей и ПК", (150, 80, 255), (255, 90, 200)),
-    "accounts": ("MY GAMES", "Повтор доната в один тап", (40, 210, 170), (180, 255, 90)),
-    "catalog": ("CATALOG", "Все предложения", (120, 100, 255), (255, 120, 200)),
-    "search": ("SEARCH", "Поиск по играм", (40, 190, 255), (120, 255, 210)),
-    "cart": ("CART", "Ваша корзина", (60, 220, 120), (220, 255, 80)),
-    "checkout": ("CHECKOUT", "Оформление заказа", (90, 230, 90), (255, 220, 60)),
-    "profile": ("PROFILE", "Личный кабинет", (255, 140, 40), (255, 220, 90)),
-    "orders": ("ORDERS", "История заказов", (255, 170, 50), (255, 90, 90)),
-    "support": ("SUPPORT", "Поддержка", (60, 200, 230), (150, 120, 255)),
-    "docs": ("DOCS", "Документы и правила", (150, 160, 200), (110, 130, 255)),
+SECTIONS: dict[str, tuple[str, str, tuple[int, int, int]]] = {
+    "menu": ("HONESTPLAY", "Цифровые товары без лишнего риска", TEAL),
+    "topup": ("ПОПОЛНЕНИЯ", "Валюта на игровой аккаунт", CYAN),
+    "roblox": ("ROBLOX", "Robux и подарочные карты", (44, 194, 200)),
+    "cards": ("GAME CARDS", "PlayStation · Xbox · Nintendo", (61, 165, 220)),
+    "keys": ("GAME KEYS", "Ключи для консолей и ПК", (36, 186, 174)),
+    "accounts": ("МОИ ИГРЫ", "Повтор доната в один тап", (77, 203, 165)),
+    "catalog": ("КАТАЛОГ", "Все доступные предложения", TEAL),
+    "search": ("ПОИСК", "Найдите нужную игру", CYAN),
+    "cart": ("КОРЗИНА", "Ваши выбранные товары", (50, 191, 156)),
+    "checkout": ("ОФОРМЛЕНИЕ", "Проверьте заказ перед оплатой", GOLD),
+    "profile": ("ПРОФИЛЬ", "Личный кабинет", (40, 173, 193)),
+    "orders": ("ЗАКАЗЫ", "История покупок", (83, 190, 178)),
+    "support": ("ПОДДЕРЖКА", "Мы поможем разобраться", CYAN),
+    "docs": ("ДОКУМЕНТЫ", "Прозрачные условия сервиса", (140, 191, 204)),
 }
 
 FONT_DIR = Path("/System/Library/Fonts/Supplemental")
-TITLE_FONT = FONT_DIR / "Impact.ttf"
-TEXT_FONT = FONT_DIR / "Arial Bold.ttf"
-HORIZON = 470
+TITLE_FONT = FONT_DIR / "Arial Bold.ttf"
+TEXT_FONT = FONT_DIR / "Arial.ttf"
 
 
-def mix(a, b, t):
+def mix(a, b, t: float):
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def background(primary) -> Image.Image:
-    image = Image.new("RGB", SIZE)
-    draw = ImageDraw.Draw(image)
-    top, mid = (8, 6, 22), mix((20, 8, 40), primary, 0.35)
-    for y in range(SIZE[1]):
-        t = y / HORIZON if y < HORIZON else 1 - (y - HORIZON) / (SIZE[1] - HORIZON) * 0.8
-        draw.line([(0, y), (SIZE[0], y)], fill=mix(top, mid, max(0.0, min(1.0, t)) ** 1.6))
-    return image
-
-
-def sun(primary, secondary) -> Image.Image:
-    """Striped retro sun sitting on the horizon, right of centre."""
-    layer = Image.new("RGB", SIZE)
-    draw = ImageDraw.Draw(layer)
-    cx, cy, r = 930, HORIZON - 40, 230
-    for y in range(cy - r, HORIZON):
-        half = math.sqrt(max(0, r * r - (y - cy) ** 2))
-        t = (y - (cy - r)) / (2 * r)
-        band = y > cy - r * 0.15 and (y // 14) % 3 == 0 and t > 0.45
-        if not band:
-            draw.line([(cx - half, y), (cx + half, y)], fill=mix(secondary, primary, t))
-    return layer
-
-
-def grid(primary) -> Image.Image:
-    layer = Image.new("RGB", SIZE)
-    draw = ImageDraw.Draw(layer)
-    vanish_x = 930
-    for i in range(-24, 25):
-        x_bottom = vanish_x + i * 120
-        draw.line([(vanish_x + i * 6, HORIZON), (x_bottom, SIZE[1])], fill=primary, width=2)
-    y, step = HORIZON, 6.0
-    while y < SIZE[1]:
-        draw.line([(0, round(y)), (SIZE[0], round(y))], fill=primary, width=2)
-        step *= 1.35
-        y += step
-    return layer
-
-
-def sparkles(seed: int, color) -> Image.Image:
-    layer = Image.new("RGB", SIZE)
-    draw = ImageDraw.Draw(layer)
-    rnd = random.Random(seed)
-    for _ in range(70):
-        x, y, r = rnd.randint(0, SIZE[0]), rnd.randint(0, HORIZON - 30), rnd.choice((1, 1, 2, 2, 3))
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=mix(color, (255, 255, 255), 0.6))
-    for _ in range(6):
-        # Floating "coins": rings that read as in-game currency.
-        x, y, r = rnd.randint(560, 1240), rnd.randint(40, 300), rnd.randint(14, 30)
-        draw.ellipse([x - r, y - r, x + r, y + r], outline=color, width=5)
-        draw.ellipse([x - r // 2, y - r // 2, x + r // 2, y + r // 2], outline=color, width=3)
-    return layer
-
-
-def glow(layer: Image.Image, radius: int, strength: float) -> Image.Image:
-    return layer.filter(ImageFilter.GaussianBlur(radius)).point(lambda v: min(255, round(v * strength)))
-
-
-def fit_font(path: Path, text: str, max_width: int, start: int) -> ImageFont.FreeTypeFont:
+def fitted_font(path: Path, text: str, max_width: int, start: int):
     size = start
-    while size > 40:
-        font = ImageFont.truetype(str(path), size)
-        if font.getlength(text) <= max_width:
-            return font
-        size -= 4
+    while size > 28:
+        result = ImageFont.truetype(str(path), size)
+        if result.getlength(text) <= max_width:
+            return result
+        size -= 3
     return ImageFont.truetype(str(path), size)
 
 
-def render(title: str, subtitle: str, primary, secondary, number: int) -> Image.Image:
-    image = background(primary)
-    for layer, blur, strength in ((sun(primary, secondary), 30, 0.9), (grid(primary), 6, 1.4), (sparkles(number, secondary), 4, 1.6)):
-        image = ImageChops.add(image, glow(layer, blur, strength))
-        image = ImageChops.lighter(image, layer)
+def shield_layer(size: tuple[int, int], color: tuple[int, int, int], box: tuple[int, int, int, int]) -> Image.Image:
+    layer = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(layer)
+    left, top, right, bottom = box
+    middle = (left + right) // 2
+    points = [(middle, top), (right - 12, top + 54), (right - 38, bottom - 112), (middle, bottom), (left + 38, bottom - 112), (left + 12, top + 54)]
+    draw.polygon(points, fill=(*color, 245), outline=(*GOLD, 235), width=8)
+    inner = [(middle, top + 38), (right - 56, top + 78), (right - 77, bottom - 139), (middle, bottom - 37), (left + 77, bottom - 139), (left + 56, top + 78)]
+    draw.polygon(inner, fill=(*NAVY, 215))
+    return layer
 
-    image = draw_dragon(image, (730, 180, 545), (18, 8, 30), primary, secondary, width=4)
 
-    # Dark panel on the left keeps the text readable.
-    shade = Image.new("L", SIZE)
-    shade_draw = ImageDraw.Draw(shade)
-    for x in range(SIZE[0]):
-        shade_draw.line([(x, 0), (x, SIZE[1])], fill=round(200 * max(0.0, 1 - x / 720) ** 1.3))
-    image = Image.composite(Image.new("RGB", SIZE, (6, 4, 16)), image, shade)
-
-    margin = 72
-    title_font = fit_font(TITLE_FONT, title, 620, 150)
-    title_y = 210
-    text_layer = Image.new("RGB", SIZE)
-    ImageDraw.Draw(text_layer).text((margin + 6, title_y + 6), title, font=title_font, fill=primary)
-    image = ImageChops.add(image, glow(text_layer, 16, 1.2))
+def add_check(image: Image.Image, box: tuple[int, int, int, int]) -> None:
     draw = ImageDraw.Draw(image)
-    draw.text((margin + 5, title_y + 5), title, font=title_font, fill=primary)
-    draw.text((margin, title_y), title, font=title_font, fill=(255, 250, 240))
-
-    small = ImageFont.truetype(str(TEXT_FONT), 26)
-    sub_font = ImageFont.truetype(str(TEXT_FONT), 40)
-    tag = f"{BRAND} · GAME STORE"
-    draw.rounded_rectangle([margin, 62, margin + 44 + small.getlength(tag), 104], radius=21, outline=secondary, width=3)
-    draw.text((margin + 22, 69), tag, font=small, fill=(255, 245, 230))
-    draw.text((margin, title_y + title_font.size + 30), subtitle, font=sub_font, fill=secondary)
-    draw.text((margin, SIZE[1] - 66), f"LV.{number:02d}", font=small, fill=mix(secondary, (255, 255, 255), 0.4))
-    return image
+    left, top, right, bottom = box
+    draw.line([(left, (top + bottom) // 2), (left + (right - left) * .31, bottom), (right, top)], fill=(*GOLD, 255), width=max(10, (right - left) // 9), joint="curve")
 
 
 def logo(size: int = 640) -> Image.Image:
-    """Round-friendly avatar for @BotFather: the dragon in front of the striped sun."""
-    primary, secondary = SECTIONS["menu"][2], SECTIONS["menu"][3]
-    image = Image.new("RGB", (size, size), (10, 6, 24))
+    image = Image.new("RGB", (size, size), NAVY)
     draw = ImageDraw.Draw(image)
     for y in range(size):
-        draw.line([(0, y), (size, y)], fill=mix((10, 6, 24), mix((20, 8, 40), primary, 0.35), (y / size) ** 1.8))
-    sun_layer = Image.new("RGB", (size, size))
-    sun_draw = ImageDraw.Draw(sun_layer)
-    cx, cy, r = size * 0.52, size * 0.5, size * 0.36
-    for y in range(int(cy - r), int(cy + r)):
-        half = math.sqrt(max(0.0, r * r - (y - cy) ** 2))
-        t = (y - (cy - r)) / (2 * r)
-        if not (t > 0.55 and (y // 12) % 3 == 0):
-            sun_draw.line([(cx - half, y), (cx + half, y)], fill=mix(secondary, primary, t))
-    image = ImageChops.add(image, glow(sun_layer, 26, 0.8))
-    image = ImageChops.lighter(image, sun_layer)
-    image = draw_dragon(image, (size * 0.04, size * 0.1, size * 0.92), (18, 8, 30), primary, secondary, width=6)
-    # Everything outside the circle is cleared so the avatar stays clean after Telegram's round crop.
-    inside = Image.new("L", (size, size))
-    ImageDraw.Draw(inside).ellipse([0, 0, size - 1, size - 1], fill=255)
-    image = Image.composite(image, Image.new("RGB", (size, size), (10, 6, 24)), inside)
-    ring = Image.new("L", (size, size))
-    ImageDraw.Draw(ring).ellipse([6, 6, size - 6, size - 6], outline=255, width=10)
-    return Image.composite(Image.new("RGB", (size, size), primary), image, ring)
+        draw.line([(0, y), (size, y)], fill=mix(NAVY, (8, 62, 80), (y / size) ** .7))
+    layer = shield_layer((size, size), TEAL, (80, 42, size - 80, size - 38))
+    image = Image.alpha_composite(image.convert("RGBA"), layer.filter(ImageFilter.GaussianBlur(24)))
+    image = Image.alpha_composite(image, layer)
+    add_check(image, (size // 4 + 15, size // 2 - 10, size * 3 // 4 - 5, size * 3 // 4 - 15))
+    return image.convert("RGB")
+
+
+def background(color: tuple[int, int, int], seed: int) -> Image.Image:
+    image = Image.new("RGB", SIZE, NAVY)
+    draw = ImageDraw.Draw(image)
+    for y in range(SIZE[1]):
+        draw.line([(0, y), SIZE], fill=mix(NAVY, mix((8, 58, 77), color, .28), (y / SIZE[1]) ** 1.35))
+    randomizer = random.Random(seed)
+    for _ in range(90):
+        x, y, radius = randomizer.randrange(SIZE[0]), randomizer.randrange(SIZE[1]), randomizer.choice((1, 1, 2, 2, 3))
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=mix(color, WHITE, .45))
+    return image
+
+
+def render(title: str, subtitle: str, color: tuple[int, int, int], number: int) -> Image.Image:
+    image = background(color, number).convert("RGBA")
+    lights = Image.new("RGBA", SIZE)
+    light_draw = ImageDraw.Draw(lights)
+    for radius, alpha in ((390, 38), (250, 50), (120, 75)):
+        light_draw.ellipse((770 - radius, 355 - radius, 770 + radius, 355 + radius), fill=(*color, alpha))
+    image = Image.alpha_composite(image, lights.filter(ImageFilter.GaussianBlur(45)))
+    emblem = shield_layer(SIZE, color, (760, 102, 1120, 555))
+    image = Image.alpha_composite(image, emblem.filter(ImageFilter.GaussianBlur(28)))
+    image = Image.alpha_composite(image, emblem)
+    add_check(image, (845, 292, 1037, 432))
+    veil = Image.new("L", SIZE)
+    veil_draw = ImageDraw.Draw(veil)
+    for x in range(SIZE[0]):
+        veil_draw.line([(x, 0), (x, SIZE[1])], fill=round(225 * max(0, 1 - x / 700) ** 1.6))
+    image = Image.composite(Image.new("RGBA", SIZE, (*NAVY, 255)), image, veil)
+    draw = ImageDraw.Draw(image)
+    tag_font = ImageFont.truetype(str(TITLE_FONT), 22)
+    draw.rounded_rectangle((70, 62, 390, 106), radius=22, outline=(*GOLD, 220), width=2)
+    draw.text((92, 72), "HONESTPLAY  ·  GAME STORE", font=tag_font, fill=WHITE)
+    title_font = fitted_font(TITLE_FONT, title, 610, 82)
+    draw.text((70, 250), title, font=title_font, fill=WHITE)
+    draw.text((72, 250 + title_font.size + 25), subtitle, font=fitted_font(TEXT_FONT, subtitle, 580, 31), fill=mix(color, WHITE, .6))
+    draw.text((72, 645), "ПРОВЕРЕННЫЙ ВЫБОР", font=tag_font, fill=mix(GOLD, WHITE, .45))
+    return image.convert("RGB")
 
 
 def main() -> None:
@@ -183,8 +126,8 @@ def main() -> None:
     print("assets/logo.png  (аватарка: @BotFather → /setuserpic)")
     for number, (key, spec) in enumerate(SECTIONS.items(), start=1):
         path = OUT / f"{key}.jpg"
-        render(*spec, number=number).save(path, "JPEG", quality=86, optimize=True, progressive=True)
-        print(f"{path.relative_to(ROOT)}  {path.stat().st_size // 1024} KB")
+        render(*spec, number).save(path, "JPEG", quality=88, optimize=True, progressive=True)
+        print(path.relative_to(ROOT))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from html import escape
 from uuid import uuid4
 
 from aiogram import Bot, F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -27,6 +28,11 @@ def ticket_status(status: str) -> str:
 
 def customer_support_keyboard():
     return kb([("✍️ Новое обращение", "sup:new")], [("📨 Мои обращения", "sup:mine")], nav())
+
+
+@router.message(Command("support", "paysupport"))
+async def support_command(message: Message) -> None:
+    await reply(message, "💬 <b>Поддержка</b>\nОпишите вопрос — оператор увидит обращение в этом же боте и ответит сюда. Не отправляйте пароли, коды подтверждения и данные карты.", customer_support_keyboard(), "support")
 
 
 async def notify_admins(bot: Bot, ticket: SupportTicket, text: str) -> None:

@@ -19,4 +19,10 @@
 - провести юридическую проверку документов и сверку с требованиями платёжного провайдера;
 - обновить текст в боте только после фактического запуска этих процессов.
 
+## Что уже подключено в этом проекте
+
+В разделе «Документы» и по командам `/privacy`, `/agreement`, `/offer`, `/returns`, `/contacts`, `/prices`, `/terms`, `/support` и `/paysupport` доступны шесть документов. При запуске публичного профиля Caddy те же страницы публикуются по постоянным адресам `/docs/privacy.html`, `/docs/agreement.html`, `/docs/offer.html`, `/docs/returns.html`, `/docs/contacts.html` и `/docs/prices.html`.
+
+Перед публикацией задайте в `.env` как минимум `STORE_NAME`, `SUPPORT_CONTACT`, `LEGAL_DOCUMENT_DATE`, `LEGAL_OPERATOR_NAME`, `LEGAL_CONTACT_EMAIL`, `LEGAL_SELLER_DETAILS`, `LEGAL_JURISDICTION`, `LEGAL_PUBLIC_BASE_URL`, фактические `LEGAL_PROVIDER_NAME` и `LEGAL_SUPPLIER_NAME`. Оставляйте `PAYMENTS_ENABLED=false`, пока платёжная интеграция, вебхуки, выдача и возвраты не работают в production. После этого включайте значение только вместе с юридической проверкой текстов.
+
 Не заявляйте в документах о реальном платеже, выдаче, возврате, ИП/ООО или защите данных, если соответствующий процесс или реквизит ещё не существует.

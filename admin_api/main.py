@@ -11,6 +11,7 @@ import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -19,10 +20,39 @@ from sqlalchemy.orm import selectinload
 from admin_api.settings import get_admin_settings
 from database.models import Order, Product, PromoCode, SupportMessage, SupportTicket, User
 from database.session import SessionLocal
+from config import get_settings
+from services.legal import contacts, payment_and_refunds, prices_and_tariffs, privacy_policy, returns_policy, terms_of_service
 
-app = FastAPI(title="DKMARKET Admin API", docs_url=None, redoc_url=None)
+app = FastAPI(title="HonestPlay Admin API", docs_url=None, redoc_url=None)
 bearer = HTTPBearer(auto_error=False)
 password_hasher = PasswordHasher()
+
+PUBLIC_DOCUMENTS = {
+    "privacy.html": privacy_policy,
+    "agreement.html": terms_of_service,
+    "offer.html": payment_and_refunds,
+    "returns.html": returns_policy,
+    "contacts.html": contacts,
+    "prices.html": prices_and_tariffs,
+}
+
+
+def public_document_page(content: str) -> str:
+    # Legal builders escape configuration values themselves and use only the
+    # Telegram subset of HTML tags, which browsers can render directly.
+    return f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Документы</title><style>
+body{{margin:0;background:#10131a;color:#e9edf5;font:16px/1.6 system-ui,-apple-system,sans-serif}}main{{max-width:760px;margin:0 auto;padding:36px 20px 56px}}b{{display:block;font-size:1.05em;margin-top:1.45em}}main>b:first-child{{font-size:1.7em;margin-top:0}}a{{color:#82b7ff}}footer{{margin-top:36px;color:#aeb8c8;font-size:.9em}}
+</style></head><body><main>{content}<footer>Актуальная редакция публикуется с указанной датой.</footer></main></body></html>"""
+
+
+@app.get("/docs/{page}", response_class=HTMLResponse, include_in_schema=False)
+async def public_document(page: str) -> HTMLResponse:
+    builder = PUBLIC_DOCUMENTS.get(page)
+    if not builder:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    return HTMLResponse(public_document_page(builder(get_settings())), headers={"Cache-Control": "no-store"})
 
 
 class LoginPayload(BaseModel):

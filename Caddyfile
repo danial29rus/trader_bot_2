@@ -18,5 +18,10 @@
 		Referrer-Policy "no-referrer"
 	}
 
+	# Public legal pages; no forms, analytics or cookies are served here.
+	handle /docs/* {
+		reverse_proxy admin-api:8000
+	}
+
 	reverse_proxy admin-web:80
 }
