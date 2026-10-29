@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "banners"
-MASTER_ART = ROOT / "assets" / "banner_master.png"
+MASTER_ART = ROOT / "assets" / "banner_master.jpg"
 SIZE = (1280, 720)
 BRAND = "HonestPlay"
 NAVY, TEAL, CYAN, GOLD, WHITE = (5, 19, 37), (12, 169, 170), (48, 214, 215), (232, 185, 90), (244, 248, 255)
