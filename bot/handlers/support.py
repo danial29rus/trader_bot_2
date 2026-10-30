@@ -30,9 +30,14 @@ def customer_support_keyboard():
     return kb([("✍️ Новое обращение", "sup:new")], [("📨 Мои обращения", "sup:mine")], nav())
 
 
+def support_intro() -> str:
+    contact = f"\n\nОфициальный аккаунт: {escape(settings.support_contact)}" if settings.has_public_support_contact else ""
+    return "💬 <b>Поддержка</b>\nОпишите вопрос — оператор увидит обращение в этом же боте и ответит сюда. Не отправляйте пароли, коды подтверждения и данные карты." + contact
+
+
 @router.message(Command("support", "paysupport"))
 async def support_command(message: Message) -> None:
-    await reply(message, "💬 <b>Поддержка</b>\nОпишите вопрос — оператор увидит обращение в этом же боте и ответит сюда. Не отправляйте пароли, коды подтверждения и данные карты.", customer_support_keyboard(), "support")
+    await reply(message, support_intro(), customer_support_keyboard(), "support")
 
 
 async def notify_admins(bot: Bot, ticket: SupportTicket, text: str) -> None:
@@ -62,7 +67,7 @@ def transcript(ticket: SupportTicket, admin_view: bool = False) -> str:
 @router.callback_query(F.data == "support")
 async def support_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await render(callback, "💬 <b>Поддержка</b>\nОпишите вопрос — оператор увидит обращение в этом же боте и ответит сюда. Не отправляйте пароли, коды подтверждения и данные карты.", customer_support_keyboard(), "support")
+    await render(callback, support_intro(), customer_support_keyboard(), "support")
 
 
 @router.callback_query(F.data == "sup:new")
