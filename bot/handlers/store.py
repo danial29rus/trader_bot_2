@@ -851,7 +851,14 @@ async def create(callback: CallbackQuery, state: FSMContext) -> None:
         qr.save(data_stream, format="PNG")
         await callback.bot.send_photo(
             callback.message.chat.id, BufferedInputFile(data_stream.getvalue(), f"payment-{order.public_number}.png"),
-            caption=f"<b>QR-код для оплаты заказа {escape(order.public_number)}</b>\nСумма: <b>{catalog_service.money(order.total_minor)}</b>",
+            caption=(
+                f"<b>Оплата заказа {escape(order.public_number)}</b>\n"
+                f"Сумма: <b>{catalog_service.money(order.total_minor)}</b>\n"
+                f'<a href="{escape(created.payment_url, quote=True)}">Открыть ссылку на оплату</a>'
+            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💳 Перейти к оплате", url=created.payment_url),
+            ]]),
         )
         await order_details(callback, order)
     except ValueError as exc:
