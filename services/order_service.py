@@ -28,7 +28,7 @@ async def create_order(
     promo_code: str | None = None,
     use_bonus: bool = False,
 ) -> Order:
-    if payment_method not in {"card", "sbp"}:
+    if payment_method not in {"card", "sbp", "mulenpay"}:
         raise ValueError("Недопустимый метод оплаты")
     user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
     if not user:
