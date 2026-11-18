@@ -111,12 +111,17 @@ async def mark_order_paid(session: AsyncSession, order_id: int) -> tuple[Order |
 
 
 async def record_mulenpay_status(session: AsyncSession, payment_id: int, provider_status: int) -> tuple[Order | None, bool]:
-    """Persist a provider status and confirm the order only for MulenPay status 3."""
+    """Persist a MulenPay status, confirming status 3 and cancelling status 2."""
     payment = await session.scalar(select(Payment).where(Payment.id == payment_id).with_for_update())
     if not payment:
         return None, False
     payment.provider_status = provider_status
     payment.last_checked_at = datetime.now(timezone.utc)
+    if provider_status == 2:
+        order, changed = await transition_order(session, payment.order_id, None, "cancelled")
+        if changed:
+            payment.status = "cancelled"
+        return order, changed
     if provider_status != 3:
         return None, False
     order, changed = await mark_order_paid(session, payment.order_id)

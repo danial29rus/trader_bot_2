@@ -36,12 +36,16 @@ async def check_once(client: MulenPayClient, bot: Bot) -> None:
             order, changed = await record_mulenpay_status(session, payment_id, provider_status)
             if changed and order:
                 user = await session.get(User, order.user_id)
-                notice = (user.telegram_id, order.public_number) if user else None
+                notice = (user.telegram_id, order.public_number, order.status) if user else None
             else:
                 notice = None
         if notice:
             try:
-                await bot.send_message(notice[0], f"✅ <b>Оплата заказа {notice[1]} подтверждена.</b>\nЗаказ передан в обработку.")
+                if notice[2] == "paid":
+                    text = f"✅ <b>Оплата заказа {notice[1]} подтверждена.</b>\nЗаказ передан в обработку."
+                else:
+                    text = f"Платёж по заказу {notice[1]} отменён. Заказ отменён."
+                await bot.send_message(notice[0], text)
             except Exception:
                 logger.exception("Could not notify customer about order %s", notice[1])
 
