@@ -17,7 +17,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import UUID4, BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
@@ -105,7 +105,7 @@ class ManualOrderPayload(BaseModel):
 
 class PublicPaymentCreatePayload(BaseModel):
     amount: Decimal = Field(gt=0, le=10_000_000, decimal_places=2)
-    uuid: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
+    uuid: UUID4
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     description: str = Field(default="Оплата заказа", min_length=1, max_length=255)
 
@@ -240,8 +240,9 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
     if amount_minor_decimal != amount_minor_decimal.to_integral_value():
         raise HTTPException(status_code=422, detail="Сумма должна быть указана в рублях и копейках")
     amount_minor = int(amount_minor_decimal)
+    payment_uuid = str(payload.uuid)
     async with SessionLocal() as session, session.begin():
-        existing = await session.scalar(select(Payment).where(Payment.reference == payload.uuid))
+        existing = await session.scalar(select(Payment).where(Payment.reference == payment_uuid))
         if existing:
             order = await session.get(Order, existing.order_id)
             if existing.method != "mulenpay" or not order:
@@ -253,14 +254,14 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
                 "status": order.status, "payment_status": existing.status,
                 "payment_url": existing.payment_url, "provider_payment_id": existing.provider_payment_id,
             }
-        guest_telegram_id = -int(hashlib.sha256(payload.uuid.encode()).hexdigest()[:15], 16)
+        guest_telegram_id = -int(hashlib.sha256(payment_uuid.encode()).hexdigest()[:15], 16)
         guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id))
         if not guest:
             guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=payload.email.casefold())
             session.add(guest)
             await session.flush()
         order = Order(
-            public_number=payload.uuid, user_id=guest.id,
+            public_number=payment_uuid, user_id=guest.id,
             status="pending_payment", payment_method="mulenpay", subtotal_minor=amount_minor,
             total_minor=amount_minor, currency="RUB",
         )
@@ -268,7 +269,7 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
         await session.flush()
         payment = Payment(
             order_id=order.id, method="mulenpay", status="pending", amount_minor=amount_minor,
-            is_test=False, reference=payload.uuid,
+            is_test=False, reference=payment_uuid,
         )
         session.add(payment)
         await session.flush()
@@ -276,7 +277,7 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
     from integrations.mulenpay_client import MulenPayClient, MulenPayError
     client = MulenPayClient(settings)
     try:
-        created = await client.create_payment(uuid=payload.uuid, amount_minor=amount_minor, description=payload.description, email=payload.email)
+        created = await client.create_payment(uuid=payment_uuid, amount_minor=amount_minor, description=payload.description, email=payload.email)
     except MulenPayError as exc:
         logger.error("MulenPay create-payment failed: %s", exc)
         async with SessionLocal() as session:
@@ -292,7 +293,7 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
         payment.provider_payment_id = created.id
         payment.payment_url = created.payment_url
     return {
-        "uuid": payload.uuid, "amount": str(payload.amount),
+        "uuid": payment_uuid, "amount": str(payload.amount),
         "status": "pending_payment", "payment_status": "pending",
         "payment_url": created.payment_url, "provider_payment_id": created.id,
     }
@@ -473,7 +474,7 @@ async def create_manual_order(payload: ManualOrderPayload, _: Admin) -> dict:
         customer.bonus_balance_minor -= bonus_used
         total = after_promo - bonus_used
         order = Order(
-            public_number=f"M-{uuid4().hex[:10].upper()}", user_id=customer.id,
+            public_number=str(uuid4()), user_id=customer.id,
             status="manual", payment_method="manual", subtotal_minor=subtotal,
             promo_code=promo.code if promo else None, promo_discount_minor=promo_discount,
             # A manual order is not a confirmed payment, so it never accrues

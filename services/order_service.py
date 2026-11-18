@@ -37,7 +37,8 @@ async def create_order(
     if not lines:
         raise ValueError("Корзина пуста")
     subtotal = 0
-    order = Order(public_number=f"T-{uuid4().hex[:10].upper()}", user_id=user_id, status="pending_payment", payment_method=payment_method, subtotal_minor=0, total_minor=0, currency="RUB")
+    order_uuid = str(uuid4())
+    order = Order(public_number=order_uuid, user_id=user_id, status="pending_payment", payment_method=payment_method, subtotal_minor=0, total_minor=0, currency="RUB")
     session.add(order)
     await session.flush()
     for line in lines:
@@ -64,7 +65,7 @@ async def create_order(
     order.subtotal_minor = subtotal
     order.total_minor = after_promo - order.bonus_used_minor
     order.bonus_accrued_minor = order.total_minor * BONUS_PERCENT // 100
-    session.add(Payment(order_id=order.id, method=payment_method, status="pending", amount_minor=order.total_minor, is_test=False, reference=f"payment-{uuid4().hex}"))
+    session.add(Payment(order_id=order.id, method=payment_method, status="pending", amount_minor=order.total_minor, is_test=False, reference=order_uuid))
     await session.flush()
     return order
 
