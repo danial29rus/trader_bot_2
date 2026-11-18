@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import UUID4, BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from admin_api.settings import get_admin_settings
@@ -124,8 +124,8 @@ def as_iso(value: datetime | None) -> str | None:
 
 def user_data(user: User | None) -> dict:
     if not user:
-        return {"id": None, "telegram_id": None, "username": None, "first_name": "Удалённый пользователь", "bonus_balance_minor": 0}
-    return {"id": user.id, "telegram_id": user.telegram_id, "username": user.username, "first_name": user.first_name, "bonus_balance_minor": user.bonus_balance_minor}
+        return {"id": None, "telegram_id": None, "username": None, "first_name": "Удалённый пользователь", "email": None, "bonus_balance_minor": 0}
+    return {"id": user.id, "telegram_id": user.telegram_id, "username": user.username, "first_name": user.first_name, "email": user.email, "bonus_balance_minor": user.bonus_balance_minor}
 
 
 def promo_data(item: PromoCode) -> dict:
@@ -254,12 +254,38 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
                 "status": order.status, "payment_status": existing.status,
                 "payment_url": existing.payment_url, "provider_payment_id": existing.provider_payment_id,
             }
-        guest_telegram_id = -int(hashlib.sha256(payment_uuid.encode()).hexdigest()[:15], 16)
-        guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id))
+        email = payload.email.strip().casefold()
+        guests = list((await session.scalars(
+            select(User).where(
+                User.telegram_id < 0,
+                User.first_name == "API customer",
+                func.lower(User.email) == email,
+            ).order_by(User.id).with_for_update()
+        )).all())
+        guest = guests[0] if guests else None
         if not guest:
-            guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=payload.email.casefold())
+            guest_telegram_id = -int(hashlib.sha256(f"honestplay-api:{email}".encode()).hexdigest()[:15], 16)
+            guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id).with_for_update())
+        if not guest:
+            guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=email)
             session.add(guest)
             await session.flush()
+        elif guest.email != email:
+            guest.email = email
+
+        # Older API calls created one guest per UUID. Move their productless
+        # external orders under the email's canonical API customer.
+        if guests:
+            old_guest_ids = [item.id for item in guests]
+            await session.execute(
+                update(Order)
+                .where(
+                    Order.user_id.in_(old_guest_ids),
+                    Order.payment_method == "mulenpay",
+                    ~exists(select(OrderItem.id).where(OrderItem.order_id == Order.id)),
+                )
+                .values(user_id=guest.id)
+            )
         order = Order(
             public_number=payment_uuid, user_id=guest.id,
             status="pending_payment", payment_method="mulenpay", subtotal_minor=amount_minor,
@@ -340,7 +366,7 @@ async def users(_: Admin, query: str = "", limit: int = 100, offset: int = 0) ->
         stmt = select(User)
         if query.strip():
             needle = query.strip()
-            conditions = [User.first_name.ilike(f"%{needle}%"), User.username.ilike(f"%{needle}%")]
+            conditions = [User.first_name.ilike(f"%{needle}%"), User.username.ilike(f"%{needle}%"), User.email.ilike(f"%{needle}%")]
             if needle.lstrip("-").isdigit():
                 conditions.append(User.telegram_id == int(needle))
             from sqlalchemy import or_
@@ -355,12 +381,14 @@ async def orders(_: Admin, limit: int = 100, offset: int = 0, query: str = "") -
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
     async with SessionLocal() as session:
-        stmt = select(Order).join(Payment, Payment.order_id == Order.id, isouter=True)
+        stmt = select(Order).join(Payment, Payment.order_id == Order.id, isouter=True).join(User, User.id == Order.user_id)
         if query.strip():
-            needle = f"%{query.strip()}%"
-            stmt = stmt.where(or_(Order.public_number.ilike(needle), Payment.reference.ilike(needle), Payment.payment_url.ilike(needle)))
-            if query.strip().isdigit():
-                stmt = stmt.where(or_(Order.public_number.ilike(needle), Payment.reference.ilike(needle), Payment.payment_url.ilike(needle), Payment.provider_payment_id == int(query.strip())))
+            raw_query = query.strip()
+            needle = f"%{raw_query}%"
+            search = [Order.public_number.ilike(needle), Payment.reference.ilike(needle), Payment.payment_url.ilike(needle), User.email.ilike(needle)]
+            if raw_query.isdigit():
+                search.append(Payment.provider_payment_id == int(raw_query))
+            stmt = stmt.where(or_(*search))
         total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = list((await session.scalars(stmt.options(selectinload(Order.items), selectinload(Order.payment)).order_by(Order.created_at.desc()).offset(offset).limit(limit))).unique().all())
         customers = {item.user_id: await session.get(User, item.user_id) for item in rows}
