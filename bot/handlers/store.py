@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 import re
+from io import BytesIO
 from html import escape
 
+import qrcode
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
@@ -17,10 +19,11 @@ from bot import panel
 from bot.keyboards.inline import kb, main_menu, nav
 from bot.states import CartInput, Checkout, Search
 from config import get_settings
-from database.models import Category, GameAccount, Order, Product, PromoCode, User
+from database.models import Category, GameAccount, Order, Payment, Product, PromoCode, User
 from database.session import SessionLocal
 from services import cart_service, catalog_service, order_service, value_service
 from services.legal import contacts, payment_and_refunds, prices_and_tariffs, privacy_policy, returns_policy, terms_of_service
+from integrations.mulenpay_client import MulenPayClient, MulenPayError
 
 router = Router()
 settings = get_settings()
@@ -699,13 +702,16 @@ async def checkout_view(user_id: int, promo_code: str | None, use_bonus: bool) -
         f"Сумма товаров: <b>{catalog_service.money(subtotal)}</b>\n"
         f"{promo_line}\n{bonus_line}\n"
         f"К оплате: <b>{catalog_service.money(total)}</b>\n\n"
-        "<i>В данный момент оплата находится на стадии подключения.</i>"
+        + ("Вы будете перенаправлены на защищённую страницу MulenPay." if settings.mulenpay_configured else "<i>В данный момент оплата находится на стадии подключения.</i>")
     )
     buttons = [[("🏷 Ввести промокод", "checkout:promo")]]
     if normalized_code:
         buttons.append([("✖️ Убрать промокод", "checkout:clear_promo")])
     bonus_button = "✅ Списать бонусы" if use_bonus else "🎁 Списать бонусы"
     buttons.append([(bonus_button, "checkout:bonus")])
+    if settings.mulenpay_configured:
+        buttons.append([("✉️ Изменить email" if user and user.email else "✉️ Указать email", "checkout:email")])
+        buttons.append([("💳 Перейти к оплате", "create:mulenpay")])
     buttons += [[("📄 Условия оплаты", "doc:payments"), ("💬 Поддержка", "support")], [("⬅️ К корзине", "cart"), ("🏠 Главное меню", "menu")]]
     return text, kb(*buttons)
 
@@ -729,6 +735,28 @@ async def checkout(callback: CallbackQuery, state: FSMContext) -> None:
 async def enter_promo(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Checkout.waiting_promo)
     await render(callback, PROMO_PROMPT, PROMO_BACK, "checkout")
+
+
+@router.callback_query(F.data == "checkout:email")
+async def enter_email(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Checkout.waiting_email)
+    await render(callback, "<b>Email для платежа</b>\nВведите email, который будет передан платёжному провайдеру:", kb([("⬅️ К оформлению", "checkout")]), "checkout")
+
+
+@router.message(Checkout.waiting_email)
+async def save_email(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    if len(value) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+        await reply(message, "Email выглядит некорректно. Введите адрес вида name@example.com.", kb([("⬅️ К оформлению", "checkout")]), "checkout")
+        return
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, message)
+        user.email = value.casefold()
+        user_id = user.id
+    await state.set_state(None)
+    data = await state.get_data()
+    text, markup = await checkout_view(user_id, data.get("promo_code"), bool(data.get("use_bonus")))
+    await reply(message, text, markup, "checkout")
 
 
 PROMO_PROMPT = "<b>Промокод</b>\nОтправьте код одним сообщением.\nЛатинские буквы, цифры, «-» или «_»."
@@ -775,13 +803,78 @@ async def pay_choice(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("create:"))
 async def create(callback: CallbackQuery, state: FSMContext) -> None:
-    await show_checkout(callback, state)
+    if callback.data != "create:mulenpay" or not settings.mulenpay_configured:
+        await show_checkout(callback, state)
+        return
+    data = await state.get_data()
+    async with SessionLocal() as session, session.begin():
+        user = await user_for(session, callback)
+        if not user.email:
+            await state.set_state(Checkout.waiting_email)
+            await render(callback, "<b>Email для платежа</b>\nВведите email перед созданием платежа:", kb([("⬅️ К оформлению", "checkout")]), "checkout")
+            return
+        customer_email = user.email
+    try:
+        async with SessionLocal() as session, session.begin():
+            user = await user_for(session, callback)
+            order = await order_service.create_order(
+                session, user.id, "mulenpay", data.get("promo_code"), bool(data.get("use_bonus")),
+            )
+            payment = await session.scalar(select(Payment).where(Payment.order_id == order.id))
+            assert payment
+            order_id, total_minor, reference, public_number = order.id, order.total_minor, payment.reference, order.public_number
+        if total_minor == 0:
+            async with SessionLocal() as session, session.begin():
+                order, _ = await order_service.mark_order_paid(session, order_id)
+                assert order
+            await callback.answer("Заказ оплачен бонусами")
+            await order_details(callback, order)
+            return
+        client = MulenPayClient(settings)
+        try:
+            created = await client.create_payment(
+                uuid=reference, amount_minor=total_minor, description=f"Заказ {public_number}", email=customer_email,
+            )
+        finally:
+            await client.aclose()
+        async with SessionLocal() as session, session.begin():
+            payment = await session.scalar(select(Payment).where(Payment.order_id == order_id).with_for_update())
+            assert payment
+            payment.provider_payment_id = created.id
+            payment.payment_url = created.payment_url
+            payment.method = "mulenpay"
+            order = await order_service.get_order(session, order_id, user.id)
+            assert order
+        await callback.answer()
+        qr = qrcode.make(created.payment_url)
+        data_stream = BytesIO()
+        qr.save(data_stream, format="PNG")
+        await callback.bot.send_photo(
+            callback.message.chat.id, BufferedInputFile(data_stream.getvalue(), f"payment-{order.public_number}.png"),
+            caption=f"<b>QR-код для оплаты заказа {escape(order.public_number)}</b>\nСумма: <b>{catalog_service.money(order.total_minor)}</b>",
+        )
+        await order_details(callback, order)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+    except MulenPayError:
+        import logging
+        logging.getLogger(__name__).exception("MulenPay rejected payment creation")
+        await callback.answer("Не удалось создать платёж. Попробуйте позже или обратитесь в поддержку.", show_alert=True)
+    except Exception:
+        # Provider details are deliberately not shown to the customer; they are in container logs.
+        import logging
+        logging.getLogger(__name__).exception("Could not create MulenPay payment")
+        await callback.answer("Не удалось создать платёж. Попробуйте позже или обратитесь в поддержку.", show_alert=True)
 
 
 async def order_details(callback: CallbackQuery, order: Order) -> None:
     items = "\n".join(f"• {escape(x.product_name_snapshot)} × {x.quantity} — {catalog_service.money(x.total_minor)}" for x in order.items)
-    method = "Банковская карта" if order.payment_method == "card" else "СБП"
+    method = {"card": "Банковская карта", "sbp": "СБП", "mulenpay": "MulenPay"}.get(order.payment_method, order.payment_method)
     buttons = []
+    async with SessionLocal() as session:
+        payment = await session.scalar(select(Payment).where(Payment.order_id == order.id))
+    if order.status == "pending_payment" and payment and payment.payment_url:
+        buttons.append([InlineKeyboardButton(text="💳 Открыть страницу оплаты", url=payment.payment_url)])
     if order.status == "pending_payment":
         buttons.append([("❌ Отменить заказ", f"cancel:{order.id}")])
     buttons += [[("📦 Мои заказы", "orders:1")], nav("profile")]
@@ -793,7 +886,11 @@ async def order_details(callback: CallbackQuery, order: Order) -> None:
     if order.bonus_accrued_minor and order.status == "paid":
         discounts.append(f"Начислено бонусов: +{catalog_service.money(order.bonus_accrued_minor)}")
     discount_text = ("\n" + "\n".join(discounts)) if discounts else ""
-    await render(callback, f"🧾 <b>Заказ {escape(order.public_number)}</b>\nСтатус: <b>{status_text(order.status)}</b>\nОплата: {method}\n\n{items}\n\nСумма товаров: <b>{catalog_service.money(order.subtotal_minor or order.total_minor)}</b>{discount_text}\nИтого: <b>{catalog_service.money(order.total_minor)}</b>", kb(*buttons), "orders")
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        row if isinstance(row[0], InlineKeyboardButton) else [InlineKeyboardButton(text=text, callback_data=data) for text, data in row]
+        for row in buttons
+    ])
+    await render(callback, f"🧾 <b>Заказ {escape(order.public_number)}</b>\nСтатус: <b>{status_text(order.status)}</b>\nОплата: {method}\n\n{items}\n\nСумма товаров: <b>{catalog_service.money(order.subtotal_minor or order.total_minor)}</b>{discount_text}\nИтого: <b>{catalog_service.money(order.total_minor)}</b>", markup, "orders")
 
 
 @router.callback_query(F.data.startswith("paid:"))

@@ -93,7 +93,7 @@ async def transition_order(session: AsyncSession, order_id: int, user_id: int | 
 
 
 async def mark_order_paid(session: AsyncSession, order_id: int) -> tuple[Order | None, bool]:
-    """Call only from a verified, idempotent payment-provider webhook."""
+    """Call only after a verified, idempotent payment-provider status check."""
     order = await session.scalar(select(Order).where(Order.id == order_id).with_for_update())
     if not order:
         return None, False
@@ -107,6 +107,22 @@ async def mark_order_paid(session: AsyncSession, order_id: int) -> tuple[Order |
     order.status = "paid"
     order.paid_at = datetime.now(timezone.utc)
     return order, True
+
+
+async def record_mulenpay_status(session: AsyncSession, payment_id: int, provider_status: int) -> tuple[Order | None, bool]:
+    """Persist a provider status and confirm the order only for MulenPay status 3."""
+    payment = await session.scalar(select(Payment).where(Payment.id == payment_id).with_for_update())
+    if not payment:
+        return None, False
+    payment.provider_status = provider_status
+    payment.last_checked_at = datetime.now(timezone.utc)
+    if provider_status != 3:
+        return None, False
+    order, changed = await mark_order_paid(session, payment.order_id)
+    if changed:
+        payment.status = "paid"
+        payment.confirmed_at = datetime.now(timezone.utc)
+    return order, changed
 
 
 async def get_order(session: AsyncSession, order_id: int, user_id: int | None = None) -> Order | None:

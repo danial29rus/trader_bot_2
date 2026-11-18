@@ -22,6 +22,14 @@ bash scripts/setup.sh --local
 
 ## Сервер (Ubuntu/Debian, отдельный)
 
+Для выкладки текущей рабочей копии напрямую по SSH, без GitHub и домена, из корня проекта на Mac:
+
+```bash
+bash scripts/deploy_ip.sh root@<IP сервера>
+```
+
+Скрипт использует SSH и `rsync`, не копирует локальный `.env`, не удаляет серверные файлы и сохраняет существующую базу. На новом сервере он запустит интерактивную первоначальную настройку. В существующем серверном `.env` должны быть заданы MulenPay-переменные; скрипт конфигурацию и секреты не перезаписывает. Настройка `PUBLIC_HOST` через штатный setup принимает IP и включает Caddy с HTTPS-сертификатом для IP; для доступа нужны открытые порты 80 и 443.
+
 ```bash
 ssh root@<IP сервера>
 apt-get update && apt-get install -y git
@@ -44,6 +52,12 @@ docker compose run --rm bot python -m scripts.snapshot_import --usd-rub 95 --mar
 
 ```bash
 cd ~/honestplay && git pull && docker compose --profile public up -d --build
+```
+
+На тестовом сервере, созданном скриптом выше, обновляйте с тем же каталогом:
+
+```bash
+bash scripts/deploy_ip.sh root@<IP сервера> /opt/honestplay
 ```
 
 ## Бэкапы

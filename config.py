@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     legal_supplier_name: str = "ReSellCodes"
     legal_public_base_url: str = ""
     payments_enabled: bool = False
+    mulenpay_api_key: str = ""
+    mulenpay_shop_id: int | None = None
+    mulenpay_secret_key: str = ""
+    mulenpay_base_url: str = "https://mulenpay.ru/api"
+    mulenpay_poll_interval_seconds: int = 20
+    mulenpay_vat_code: int = 0
+    public_payments_api_key: str = ""
     refund_request_days: int = 7
     refund_review_hours: int = 24
     refund_payout_hours: int = 72
@@ -62,6 +69,10 @@ class Settings(BaseSettings):
     @property
     def has_public_support_contact(self) -> bool:
         return bool(self.support_contact.strip() and self.support_contact.strip() not in {"@support", "@your_support"})
+
+    @property
+    def mulenpay_configured(self) -> bool:
+        return bool(self.payments_enabled and self.mulenpay_api_key and self.mulenpay_secret_key and self.mulenpay_shop_id)
 
 
 @lru_cache

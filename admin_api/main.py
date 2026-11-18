@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import hmac
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from html import escape
@@ -11,21 +14,22 @@ import httpx
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from admin_api.settings import get_admin_settings
-from database.models import Order, OrderItem, Product, PromoCode, SupportMessage, SupportTicket, User
+from database.models import Order, OrderItem, Payment, Product, PromoCode, SupportMessage, SupportTicket, User
 from database.session import SessionLocal
 from config import get_settings
 from services.legal import contacts, payment_and_refunds, prices_and_tariffs, privacy_policy, returns_policy, terms_of_service
 from services.order_service import is_promo_available, normalize_promo_code
 
 app = FastAPI(title="HonestPlay Admin API", docs_url=None, redoc_url=None)
+logger = logging.getLogger(__name__)
 bearer = HTTPBearer(auto_error=False)
 password_hasher = PasswordHasher()
 
@@ -99,6 +103,21 @@ class ManualOrderPayload(BaseModel):
     use_bonus: bool = False
 
 
+class PublicPaymentCreatePayload(BaseModel):
+    amount: Decimal = Field(gt=0, le=10_000_000, decimal_places=2)
+    uuid: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:-]+$")
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    description: str = Field(default="Оплата заказа", min_length=1, max_length=255)
+
+
+async def require_public_payments_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
+    configured_key = get_settings().public_payments_api_key
+    if not configured_key:
+        raise HTTPException(status_code=503, detail="Публичный платежный API не настроен")
+    if not x_api_key or not hmac.compare_digest(x_api_key.encode("utf-8"), configured_key.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Неверный API-ключ")
+
+
 def as_iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -152,6 +171,7 @@ async def require_admin(credentials: Annotated[HTTPAuthorizationCredentials | No
 
 
 Admin = Annotated[str, Depends(require_admin)]
+PaymentsApi = Annotated[None, Depends(require_public_payments_key)]
 
 
 async def send_telegram(user: User, text: str) -> None:
@@ -211,6 +231,91 @@ async def login(payload: LoginPayload) -> dict:
     return {"access_token": token, "token_type": "bearer", "expires_in": 8 * 60 * 60}
 
 
+@app.post("/api/public/payments", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_public_payments_key)])
+async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
+    settings = get_settings()
+    if not settings.mulenpay_configured:
+        raise HTTPException(status_code=503, detail="MulenPay не настроен")
+    amount_minor_decimal = payload.amount * 100
+    if amount_minor_decimal != amount_minor_decimal.to_integral_value():
+        raise HTTPException(status_code=422, detail="Сумма должна быть указана в рублях и копейках")
+    amount_minor = int(amount_minor_decimal)
+    async with SessionLocal() as session, session.begin():
+        existing = await session.scalar(select(Payment).where(Payment.reference == payload.uuid))
+        if existing:
+            order = await session.get(Order, existing.order_id)
+            if existing.method != "mulenpay" or not order:
+                raise HTTPException(status_code=409, detail="UUID уже используется")
+            if existing.amount_minor != amount_minor:
+                raise HTTPException(status_code=409, detail="UUID уже зарегистрирован с другой суммой")
+            return {
+                "uuid": existing.reference, "amount": str(payload.amount),
+                "status": order.status, "payment_status": existing.status,
+                "payment_url": existing.payment_url, "provider_payment_id": existing.provider_payment_id,
+            }
+        guest_telegram_id = -int(hashlib.sha256(payload.uuid.encode()).hexdigest()[:15], 16)
+        guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id))
+        if not guest:
+            guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=payload.email.casefold())
+            session.add(guest)
+            await session.flush()
+        order = Order(
+            public_number=payload.uuid, user_id=guest.id,
+            status="pending_payment", payment_method="mulenpay", subtotal_minor=amount_minor,
+            total_minor=amount_minor, currency="RUB",
+        )
+        session.add(order)
+        await session.flush()
+        payment = Payment(
+            order_id=order.id, method="mulenpay", status="pending", amount_minor=amount_minor,
+            is_test=False, reference=payload.uuid,
+        )
+        session.add(payment)
+        await session.flush()
+        order_id = order.id
+    from integrations.mulenpay_client import MulenPayClient, MulenPayError
+    client = MulenPayClient(settings)
+    try:
+        created = await client.create_payment(uuid=payload.uuid, amount_minor=amount_minor, description=payload.description, email=payload.email)
+    except MulenPayError as exc:
+        logger.error("MulenPay create-payment failed: %s", exc)
+        async with SessionLocal() as session:
+            order = await session.get(Order, order_id)
+            if order:
+                raise HTTPException(status_code=502, detail="Провайдер не создал платеж; повторите запрос с тем же UUID") from exc
+        raise HTTPException(status_code=502, detail="Ошибка создания платежа") from exc
+    finally:
+        await client.aclose()
+    async with SessionLocal() as session, session.begin():
+        payment = await session.scalar(select(Payment).where(Payment.order_id == order_id).with_for_update())
+        assert payment
+        payment.provider_payment_id = created.id
+        payment.payment_url = created.payment_url
+    return {
+        "uuid": payload.uuid, "amount": str(payload.amount),
+        "status": "pending_payment", "payment_status": "pending",
+        "payment_url": created.payment_url, "provider_payment_id": created.id,
+    }
+
+
+@app.get("/api/public/payments/{payment_uuid}", dependencies=[Depends(require_public_payments_key)])
+async def public_payment_status(payment_uuid: str) -> dict:
+    async with SessionLocal() as session:
+        payment = await session.scalar(select(Payment).where(Payment.reference == payment_uuid))
+        if not payment:
+            raise HTTPException(status_code=404, detail="Платёж не найден")
+        order = await session.get(Order, payment.order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+    return {
+        "uuid": payment.reference,
+        "status": order.status, "payment_status": payment.status,
+        "provider_status": payment.provider_status, "amount_minor": payment.amount_minor,
+        "currency": order.currency, "created_at": as_iso(payment.created_at),
+        "confirmed_at": as_iso(payment.confirmed_at),
+    }
+
+
 @app.get("/api/dashboard")
 async def dashboard(_: Admin) -> dict:
     async with SessionLocal() as session:
@@ -245,12 +350,18 @@ async def users(_: Admin, query: str = "", limit: int = 100, offset: int = 0) ->
 
 
 @app.get("/api/orders")
-async def orders(_: Admin, limit: int = 100, offset: int = 0) -> dict:
+async def orders(_: Admin, limit: int = 100, offset: int = 0, query: str = "") -> dict:
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
     async with SessionLocal() as session:
-        total = await session.scalar(select(func.count(Order.id))) or 0
-        rows = list((await session.scalars(select(Order).options(selectinload(Order.items)).order_by(Order.created_at.desc()).offset(offset).limit(limit))).all())
+        stmt = select(Order).join(Payment, Payment.order_id == Order.id, isouter=True)
+        if query.strip():
+            needle = f"%{query.strip()}%"
+            stmt = stmt.where(or_(Order.public_number.ilike(needle), Payment.reference.ilike(needle), Payment.payment_url.ilike(needle)))
+            if query.strip().isdigit():
+                stmt = stmt.where(or_(Order.public_number.ilike(needle), Payment.reference.ilike(needle), Payment.payment_url.ilike(needle), Payment.provider_payment_id == int(query.strip())))
+        total = await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        rows = list((await session.scalars(stmt.options(selectinload(Order.items), selectinload(Order.payment)).order_by(Order.created_at.desc()).offset(offset).limit(limit))).unique().all())
         customers = {item.user_id: await session.get(User, item.user_id) for item in rows}
     return {
         "total": total,
@@ -258,7 +369,19 @@ async def orders(_: Admin, limit: int = 100, offset: int = 0) -> dict:
             {
                 "id": item.id,
                 "public_number": item.public_number,
+                "uuid": item.payment.reference if item.payment else item.public_number,
                 "status": item.status,
+                "payment": ({
+                    "method": item.payment.method,
+                    "status": item.payment.status,
+                    "amount_minor": item.payment.amount_minor,
+                    "provider_payment_id": item.payment.provider_payment_id,
+                    "provider_status": item.payment.provider_status,
+                    "payment_url": item.payment.payment_url,
+                    "created_at": as_iso(item.payment.created_at),
+                    "confirmed_at": as_iso(item.payment.confirmed_at),
+                    "last_checked_at": as_iso(item.payment.last_checked_at),
+                } if item.payment else None),
                 "subtotal_minor": item.subtotal_minor,
                 "promo_code": item.promo_code,
                 "promo_discount_minor": item.promo_discount_minor,

@@ -36,6 +36,30 @@ bash scripts/setup.sh           # на сервере Ubuntu/Debian, от root
 | `LEGAL_PROVIDER_NAME`, `LEGAL_SUPPLIER_NAME` | фактически используемые платёжный провайдер и поставщик; не указывайте их заранее |
 | `LEGAL_PUBLIC_BASE_URL` | публичный адрес документов без завершающего `/`, например `https://example.ru/docs` |
 | `PAYMENTS_ENABLED` | `false` по умолчанию: пока платёжная интеграция не включена, документы честно сообщают, что счёт не создаётся |
+| `MULENPAY_API_KEY`, `MULENPAY_SHOP_ID`, `MULENPAY_SECRET_KEY` | реквизиты MulenPay из личного кабинета; после их заполнения установите `PAYMENTS_ENABLED=true` |
+| `MULENPAY_POLL_INTERVAL_SECONDS` | период проверки неоплаченных счетов MulenPay, по умолчанию 20 секунд |
+| `PUBLIC_PAYMENTS_API_KEY` | секрет для публичных интеграционных методов оплаты; передавайте его в заголовке `X-API-Key` |
+
+Публичный API оплаты:
+
+```http
+POST /api/public/payments
+X-API-Key: <PUBLIC_PAYMENTS_API_KEY>
+Content-Type: application/json
+
+{"amount": 100.50, "uuid": "your-unique-transaction-id", "email": "buyer@example.com", "description": "Заказ на сайте"}
+```
+
+Создание возвращает ссылку MulenPay и внутренний номер заказа. Для проверки статуса используйте `GET /api/public/payments/{uuid}` с тем же заголовком. Повторный `POST` с тем же UUID и суммой безопасен и возвращает созданный платёж; с другой суммой вернёт `409`.
+
+После изменения `.env` примените схему и перезапустите сервисы:
+
+```bash
+docker compose exec bot alembic upgrade head
+docker compose up -d --build bot payments-worker
+```
+
+Покупатель получает QR-код и кнопку со ссылкой MulenPay. Сервис `payments-worker` проверяет ожидающие платежи и переводит заказ в «оплачен» только после статуса MulenPay `3`.
 
 Интерфейс работает как «одна панель»: каждый экран редактирует одно сообщение бота с баннером своего раздела (`assets/banners/*.jpg`, стиль ретро-аркады). Баннеры рисуются с нуля командой `python -m scripts.make_banners` (нужен Pillow из `requirements-dev.txt`, шрифты macOS); разделы, заголовки и цвета задаются в `scripts/make_banners.py`.
 

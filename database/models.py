@@ -20,6 +20,7 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str | None] = mapped_column(String(128))
+    email: Mapped[str | None] = mapped_column(String(254))
     bonus_balance_minor: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -94,6 +95,7 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     items: Mapped[list[OrderItem]] = relationship(back_populates="order", cascade="all, delete-orphan")
+    payment: Mapped[Payment | None] = relationship(back_populates="order", uselist=False)
 
 
 class PromoCode(Base):
@@ -130,8 +132,13 @@ class Payment(Base):
     amount_minor: Mapped[int] = mapped_column(BigInteger)
     is_test: Mapped[bool] = mapped_column(Boolean, default=True)
     reference: Mapped[str] = mapped_column(String(80), unique=True)
+    provider_payment_id: Mapped[int | None] = mapped_column(Integer, unique=True)
+    payment_url: Mapped[str | None] = mapped_column(Text)
+    provider_status: Mapped[int | None] = mapped_column(Integer)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    order: Mapped[Order] = relationship(back_populates="payment")
 
 
 class ImportRun(Base):
