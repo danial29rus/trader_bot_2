@@ -243,7 +243,7 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
     payment_uuid = str(payload.uuid)
     email = payload.email.strip().casefold()
     async with SessionLocal() as session, session.begin():
-        # Serialize concurrent retries that use the same external UUID.
+        # Serialize same-UUID checks and local order registration in this transaction.
         await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(payment_uuid))))
         existing = await session.scalar(select(Payment).where(Payment.reference == payment_uuid))
         if existing:
