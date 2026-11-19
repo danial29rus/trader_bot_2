@@ -241,7 +241,10 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
         raise HTTPException(status_code=422, detail="Сумма должна быть указана в рублях и копейках")
     amount_minor = int(amount_minor_decimal)
     payment_uuid = str(payload.uuid)
+    email = payload.email.strip().casefold()
     async with SessionLocal() as session, session.begin():
+        # Serialize concurrent retries that use the same external UUID.
+        await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(payment_uuid))))
         existing = await session.scalar(select(Payment).where(Payment.reference == payment_uuid))
         if existing:
             order = await session.get(Order, existing.order_id)
@@ -249,57 +252,64 @@ async def create_public_payment(payload: PublicPaymentCreatePayload) -> dict:
                 raise HTTPException(status_code=409, detail="UUID уже используется")
             if existing.amount_minor != amount_minor:
                 raise HTTPException(status_code=409, detail="UUID уже зарегистрирован с другой суммой")
-            return {
-                "uuid": existing.reference, "amount": str(payload.amount),
-                "status": order.status, "payment_status": existing.status,
-                "payment_url": existing.payment_url, "provider_payment_id": existing.provider_payment_id,
-            }
-        email = payload.email.strip().casefold()
-        guests = list((await session.scalars(
-            select(User).where(
-                User.telegram_id < 0,
-                User.first_name == "API customer",
-                func.lower(User.email) == email,
-            ).order_by(User.id).with_for_update()
-        )).all())
-        guest = guests[0] if guests else None
-        if not guest:
-            guest_telegram_id = -int(hashlib.sha256(f"honestplay-api:{email}".encode()).hexdigest()[:15], 16)
-            guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id).with_for_update())
-        if not guest:
-            guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=email)
-            session.add(guest)
-            await session.flush()
-        elif guest.email != email:
-            guest.email = email
+            customer = await session.get(User, order.user_id)
+            if customer and (customer.email or "").casefold() != email:
+                raise HTTPException(status_code=409, detail="UUID уже зарегистрирован для другого email")
+            if existing.payment_url and existing.provider_payment_id:
+                return {
+                    "uuid": existing.reference, "amount": str(payload.amount),
+                    "status": order.status, "payment_status": existing.status,
+                    "payment_url": existing.payment_url, "provider_payment_id": existing.provider_payment_id,
+                }
+            if existing.status != "pending" or order.status != "pending_payment":
+                raise HTTPException(status_code=409, detail="Платёж по этому UUID уже закрыт")
+            order_id = order.id
+        else:
+            guests = list((await session.scalars(
+                select(User).where(
+                    User.telegram_id < 0,
+                    User.first_name == "API customer",
+                    func.lower(User.email) == email,
+                ).order_by(User.id).with_for_update()
+            )).all())
+            guest = guests[0] if guests else None
+            if not guest:
+                guest_telegram_id = -int(hashlib.sha256(f"honestplay-api:{email}".encode()).hexdigest()[:15], 16)
+                guest = await session.scalar(select(User).where(User.telegram_id == guest_telegram_id).with_for_update())
+            if not guest:
+                guest = User(telegram_id=guest_telegram_id, first_name="API customer", email=email)
+                session.add(guest)
+                await session.flush()
+            elif guest.email != email:
+                guest.email = email
 
-        # Older API calls created one guest per UUID. Move their productless
-        # external orders under the email's canonical API customer.
-        if guests:
-            old_guest_ids = [item.id for item in guests]
-            await session.execute(
-                update(Order)
-                .where(
-                    Order.user_id.in_(old_guest_ids),
-                    Order.payment_method == "mulenpay",
-                    ~exists(select(OrderItem.id).where(OrderItem.order_id == Order.id)),
+            # Older API calls created one guest per UUID. Move their productless
+            # external orders under the email's canonical API customer.
+            if guests:
+                old_guest_ids = [item.id for item in guests]
+                await session.execute(
+                    update(Order)
+                    .where(
+                        Order.user_id.in_(old_guest_ids),
+                        Order.payment_method == "mulenpay",
+                        ~exists(select(OrderItem.id).where(OrderItem.order_id == Order.id)),
+                    )
+                    .values(user_id=guest.id)
                 )
-                .values(user_id=guest.id)
+            order = Order(
+                public_number=payment_uuid, user_id=guest.id,
+                status="pending_payment", payment_method="mulenpay", subtotal_minor=amount_minor,
+                total_minor=amount_minor, currency="RUB",
             )
-        order = Order(
-            public_number=payment_uuid, user_id=guest.id,
-            status="pending_payment", payment_method="mulenpay", subtotal_minor=amount_minor,
-            total_minor=amount_minor, currency="RUB",
-        )
-        session.add(order)
-        await session.flush()
-        payment = Payment(
-            order_id=order.id, method="mulenpay", status="pending", amount_minor=amount_minor,
-            is_test=False, reference=payment_uuid,
-        )
-        session.add(payment)
-        await session.flush()
-        order_id = order.id
+            session.add(order)
+            await session.flush()
+            payment = Payment(
+                order_id=order.id, method="mulenpay", status="pending", amount_minor=amount_minor,
+                is_test=False, reference=payment_uuid,
+            )
+            session.add(payment)
+            await session.flush()
+            order_id = order.id
     from integrations.mulenpay_client import MulenPayClient, MulenPayError
     client = MulenPayClient(settings)
     try:
